@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "ravenclawspingequalizer",
+  "version": "${version}",
+  "name": "RavenclawsPingEqualizer",
+  "description": "",
+  "authors": [],
+  "contact": {},
+  "license": "All-Rights-Reserved",
+  "icon": "assets/ravenclawspingequalizer/icon.png",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "net.ravenclaw.ravenclawspingequalizer.client.RavenclawsPingEqualizerClient"
+    ],
+    "main": [
+      "net.ravenclaw.ravenclawspingequalizer.RavenclawsPingEqualizer"
+    ]
+  },
+  "mixins": [
+    "ravenclawspingequalizer.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=${loader_version}",
+    "fabric": "*",
+    "minecraft": ">=1.20"
+  }
+}

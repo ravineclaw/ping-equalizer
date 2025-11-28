@@ -1,0 +1,14 @@
+# Ignore everything by default
+/*
+
+# Except these essential files and directories
+!src/
+!build.gradle
+!gradle.properties
+!settings.gradle
+!gradlew
+!gradlew.bat
+!gradle/
+!LICENSE.txt
+!.gitignore
+        
