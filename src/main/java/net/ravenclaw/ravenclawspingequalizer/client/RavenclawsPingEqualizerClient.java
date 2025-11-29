@@ -9,6 +9,7 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.minecraft.client.MinecraftClient;
 import net.ravenclaw.ravenclawspingequalizer.PingEqualizerState;
+import net.ravenclaw.ravenclawspingequalizer.cryptography.core.CryptoHandler;
 import net.minecraft.text.Text;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,6 +20,8 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
 
     @Override
     public void onInitializeClient() {
+        CryptoHandler cryptoHandler = new CryptoHandler();
+
         // Register Tick Event
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             PingEqualizerState.getInstance().tick(client);
@@ -112,6 +115,9 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                 );
             dispatcher.register(alias);
         });
+
+
+        cryptoHandler.init();
     }
 
     private String lastMessage = "";
@@ -132,4 +138,6 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
             client.player.sendMessage(Text.literal(message), false);
         }
     }
+
+    // test comment to change hash
 }
