@@ -1,7 +1,6 @@
 package net.ravenclaw.ravenclawspingequalizer.mixin;
 
 import io.netty.channel.Channel;
-import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import net.minecraft.network.ClientConnection;
 import net.minecraft.network.NetworkSide;
@@ -17,6 +16,7 @@ import net.ravenclaw.ravenclawspingequalizer.PingEqualizerState;
 import net.ravenclaw.ravenclawspingequalizer.net.DelayedPacketTask;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
@@ -32,90 +32,81 @@ public abstract class ClientConnectionMixin {
     @Shadow
     private Channel channel;
 
+    @Unique
     private final ThreadLocal<Boolean> isDelayedSend = ThreadLocal.withInitial(() -> false);
+    @Unique
     private final ConcurrentLinkedQueue<DelayedPacketTask> sendQueue = new ConcurrentLinkedQueue<>();
+    @Unique
     private final AtomicBoolean processingSendQueue = new AtomicBoolean(false);
 
+    @Unique
     private final ThreadLocal<Boolean> isDelayedReceive = ThreadLocal.withInitial(() -> false);
+    @Unique
     private final ConcurrentLinkedQueue<DelayedPacketTask> receiveQueue = new ConcurrentLinkedQueue<>();
+    @Unique
     private final AtomicBoolean processingReceiveQueue = new AtomicBoolean(false);
+    @Unique
     private static final long PRECISION_WINDOW_NANOS = TimeUnit.MILLISECONDS.toNanos(2);
+    @Unique
     private static final long MIN_RESCHEDULE_NANOS = TimeUnit.MILLISECONDS.toNanos(1);
     // The client must forward minecraft:player_loaded immediately so newer servers finish login.
+    @Unique
     private static final CustomPayload.Id<?> PLAYER_LOADED_PAYLOAD_ID = CustomPayload.id("player_loaded");
+    @Unique
     private static final Method LEGACY_SEND_PACKET_CALLBACKS = findLegacyPacketCallbacksMethod(2);
+    @Unique
     private static final Method LEGACY_SEND_PACKET_CALLBACKS_FLUSH = findLegacyPacketCallbacksMethod(3);
 
     @Inject(method = "send(Lnet/minecraft/network/packet/Packet;)V", at = @At("HEAD"), cancellable = true, require = 0)
     private void rpe$onSendSimple(Packet<?> packet, CallbackInfo ci) {
-        if (handleSend(packet, () -> self().send(packet))) {
+        // Register queued ping start time early so result can correlate even if cancellation occurs
+        if (packet instanceof QueryPingC2SPacket qp) {
+            PingEqualizerState.getInstance().onPingSent(qp.getStartTime());
+        }
+        if (rpe$handleSend(packet, () -> self().send(packet))) {
             ci.cancel();
         }
     }
 
-    @Inject(method = "send(Lnet/minecraft/network/packet/Packet;Lnet/minecraft/network/PacketCallbacks;)V", at = @At("HEAD"), cancellable = true, require = 0)
-    private void rpe$onSendWithCallbacks(Packet<?> packet, PacketCallbacks callbacks, CallbackInfo ci) {
-        if (handleSend(packet, () -> invokeLegacySend(packet, callbacks))) {
-            ci.cancel();
-        }
-    }
 
-    @Inject(method = "send(Lnet/minecraft/network/packet/Packet;Lnet/minecraft/network/PacketCallbacks;Z)V", at = @At("HEAD"), cancellable = true, require = 0)
-    private void rpe$onSendWithCallbacks(Packet<?> packet, PacketCallbacks callbacks, boolean flush, CallbackInfo ci) {
-        if (handleSend(packet, () -> invokeLegacySend(packet, callbacks, flush))) {
-            ci.cancel();
-        }
-    }
-
-    @Inject(method = "send(Lnet/minecraft/network/packet/Packet;Lio/netty/channel/ChannelFutureListener;)V", at = @At("HEAD"), cancellable = true, require = 0)
-    private void rpe$onSendWithListener(Packet<?> packet, ChannelFutureListener callbacks, CallbackInfo ci) {
-        if (handleSend(packet, () -> self().send(packet, callbacks))) {
-            ci.cancel();
-        }
-    }
-
-    @Inject(method = "send(Lnet/minecraft/network/packet/Packet;Lio/netty/channel/ChannelFutureListener;Z)V", at = @At("HEAD"), cancellable = true, require = 0)
-    private void rpe$onSendWithListener(Packet<?> packet, ChannelFutureListener callbacks, boolean flush, CallbackInfo ci) {
-        if (handleSend(packet, () -> self().send(packet, callbacks, flush))) {
-            ci.cancel();
-        }
-    }
-
-    private boolean handleSend(Packet<?> packet, Runnable sendAction) {
+    private boolean rpe$handleSend(Packet<?> packet, Runnable sendAction) {
         if (isDelayedSend.get()) {
             return false;
         }
 
-        PingEqualizerState.Mode mode = PingEqualizerState.getInstance().getMode();
-        if (mode == PingEqualizerState.Mode.OFF) {
+        PingEqualizerState state = PingEqualizerState.getInstance();
+        if (state.getMode() == PingEqualizerState.Mode.OFF) {
             return false;
         }
 
-        if (self().getSide() != NetworkSide.CLIENTBOUND) {
+        // Do not gate on connection side; some Fabric environments always report CLIENTBOUND here.
+
+        if (rpe$shouldBypassSend(packet)) {
             return false;
         }
 
-        if (shouldBypassSend(packet)) {
-            return false;
+        long delay = state.getOutboundDelayPortion();
+        // No delay requested -> send immediately but still record ping timing.
+        if (delay <= 0 && sendQueue.isEmpty()) {
+            if (packet instanceof QueryPingC2SPacket pingPacket) {
+                state.onPingActuallySent(pingPacket.getStartTime());
+            }
+            return false; // send normally
         }
-
-        if (packet instanceof QueryPingC2SPacket queryPacket) {
-            PingEqualizerState.getInstance().onPingSent(queryPacket.getStartTime());
-            // Apply delay to ping packets like any other packet for consistent timing
-        }
-
-        long delay = PingEqualizerState.getInstance().getOutboundDelayPortion();
-        if ((delay <= 0 && sendQueue.isEmpty()) || !self().isOpen() || channel == null || channel.eventLoop() == null) {
+        if (!self().isOpen() || channel == null || channel.eventLoop() == null) {
             return false;
         }
 
         long sendTime = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(delay);
         sendQueue.offer(new DelayedPacketTask(packet, sendAction, sendTime));
-        processSendQueue();
+        if (packet instanceof QueryPingC2SPacket qp) {
+            PingEqualizerState.getInstance().recordPingOutboundDelay(qp.getStartTime(), delay);
+        }
+        rpe$processSendQueue();
         return true;
     }
 
-    private void processSendQueue() {
+    private void rpe$processSendQueue() {
         if (!processingSendQueue.compareAndSet(false, true)) {
             return;
         }
@@ -126,13 +117,13 @@ public abstract class ClientConnectionMixin {
         }
 
         if (channel.eventLoop().inEventLoop()) {
-            drainSendQueue();
+            rpe$drainSendQueue();
         } else {
-            channel.eventLoop().execute(this::drainSendQueue);
+            channel.eventLoop().execute(this::rpe$drainSendQueue);
         }
     }
 
-    private void drainSendQueue() {
+    private void rpe$drainSendQueue() {
         try {
             while (true) {
                 DelayedPacketTask task = sendQueue.peek();
@@ -153,8 +144,9 @@ public abstract class ClientConnectionMixin {
 
                         isDelayedSend.set(true);
                         try {
-                            if (task.packet instanceof QueryPingC2SPacket queryPacket) {
-                                PingEqualizerState.getInstance().onPingActuallySent(queryPacket.getStartTime());
+                            // Track when QueryPing is actually sent (after delay)
+                            if (task.packet instanceof QueryPingC2SPacket pingPacket) {
+                                PingEqualizerState.getInstance().onPingActuallySent(pingPacket.getStartTime());
                             }
                             sendAction.run();
                         } finally {
@@ -165,12 +157,12 @@ public abstract class ClientConnectionMixin {
                 }
 
                 if (delayNanos <= PRECISION_WINDOW_NANOS) {
-                    spinWait(delayNanos);
+                    rpe$spinWait(delayNanos);
                     continue;
                 }
 
                 long waitNanos = Math.max(delayNanos - PRECISION_WINDOW_NANOS, MIN_RESCHEDULE_NANOS);
-                channel.eventLoop().schedule(this::processSendQueue, waitNanos, TimeUnit.NANOSECONDS);
+                channel.eventLoop().schedule(this::rpe$processSendQueue, waitNanos, TimeUnit.NANOSECONDS);
                 processingSendQueue.set(false);
                 return;
             }
@@ -181,7 +173,7 @@ public abstract class ClientConnectionMixin {
     }
 
     @Inject(method = "disconnect", at = @At("HEAD"))
-    private void rpe$onDisconnect(Text disconnectReason, CallbackInfo ci) {
+    private void rpe$onDisconnect(Text reason, CallbackInfo ci) {
         PingEqualizerState.getInstance().setOff();
     }
 
@@ -189,42 +181,41 @@ public abstract class ClientConnectionMixin {
     protected abstract void channelRead0(ChannelHandlerContext ctx, Packet<?> msg);
 
     @Inject(method = "channelRead0(Lio/netty/channel/ChannelHandlerContext;Lnet/minecraft/network/packet/Packet;)V", at = @At("HEAD"), cancellable = true)
-    private void onChannelRead(ChannelHandlerContext context, Packet<?> packet, CallbackInfo ci) {
+    private void rpe$onChannelRead(ChannelHandlerContext context, Packet<?> packet, CallbackInfo ci) {
         if (isDelayedReceive.get()) {
             return;
         }
 
-        PingEqualizerState.Mode mode = PingEqualizerState.getInstance().getMode();
-        if (mode == PingEqualizerState.Mode.OFF) {
+        PingEqualizerState state = PingEqualizerState.getInstance();
+        if (state.getMode() == PingEqualizerState.Mode.OFF) {
+            return;
+        }
+        // Avoid side-based gating; certain runtimes reuse CLIENTBOUND for both directions.
+
+        if (rpe$shouldBypassReceive(packet)) {
             return;
         }
 
-        if (self().getSide() != NetworkSide.CLIENTBOUND) {
-            return;
-        }
-
-        if (shouldBypassReceive(packet)) {
-            return;
-        }
-
-        if (packet instanceof PingResultS2CPacket pingPacket) {
-            PingEqualizerState.getInstance().onPingArrived(pingPacket.startTime());
-            // Apply split delay to ping result packets like any other packet
-        }
-
-        long delay = PingEqualizerState.getInstance().getInboundDelayPortion();
+        long delay = state.getInboundDelayPortion();
         if ((delay <= 0 && receiveQueue.isEmpty()) || !self().isOpen() || context.executor() == null) {
+            if (packet instanceof PingResultS2CPacket pingResult) {
+                state.onPingArrived(pingResult.startTime());
+                state.handlePingResult(pingResult);
+            }
             return;
         }
 
         ci.cancel();
 
-        long sendTime = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(delay);
-        receiveQueue.offer(new DelayedPacketTask(packet, null, sendTime));
-        processReceiveQueue(context);
+        long deliverTime = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(delay);
+        if (packet instanceof PingResultS2CPacket ping) {
+            PingEqualizerState.getInstance().recordPingInboundDelay(ping.startTime(), delay);
+        }
+        receiveQueue.offer(new DelayedPacketTask(packet, null, deliverTime));
+        rpe$processReceiveQueue(context);
     }
 
-    private void processReceiveQueue(ChannelHandlerContext context) {
+    private void rpe$processReceiveQueue(ChannelHandlerContext context) {
         if (!processingReceiveQueue.compareAndSet(false, true)) {
             return;
         }
@@ -234,7 +225,7 @@ public abstract class ClientConnectionMixin {
             return;
         }
 
-        Runnable runner = () -> drainReceiveQueue(context);
+        Runnable runner = () -> rpe$drainReceiveQueue(context);
         if (context.executor().inEventLoop()) {
             runner.run();
         } else {
@@ -242,7 +233,7 @@ public abstract class ClientConnectionMixin {
         }
     }
 
-    private void drainReceiveQueue(ChannelHandlerContext context) {
+    private void rpe$drainReceiveQueue(ChannelHandlerContext context) {
         try {
             while (true) {
                 DelayedPacketTask task = receiveQueue.peek();
@@ -257,6 +248,11 @@ public abstract class ClientConnectionMixin {
                     if (self().isOpen()) {
                         isDelayedReceive.set(true);
                         try {
+                            if (task.packet instanceof PingResultS2CPacket pingResult) {
+                                PingEqualizerState.getInstance().recordPingInboundDelay(pingResult.startTime(), PingEqualizerState.getInstance().getInboundDelayPortion());
+                                PingEqualizerState.getInstance().onPingArrived(pingResult.startTime());
+                                PingEqualizerState.getInstance().handlePingResult(pingResult);
+                            }
                             this.channelRead0(context, task.packet);
                         } finally {
                             isDelayedReceive.set(false);
@@ -265,7 +261,7 @@ public abstract class ClientConnectionMixin {
                 } else {
                     context.executor().schedule(() -> {
                         processingReceiveQueue.set(false);
-                        processReceiveQueue(context);
+                        rpe$processReceiveQueue(context);
                     }, delayNanos, TimeUnit.NANOSECONDS);
                     return;
                 }
@@ -276,7 +272,7 @@ public abstract class ClientConnectionMixin {
         }
     }
 
-    private static void spinWait(long nanos) {
+    private static void rpe$spinWait(long nanos) {
         long deadline = System.nanoTime() + nanos;
         while (true) {
             long remaining = deadline - System.nanoTime();
@@ -290,21 +286,21 @@ public abstract class ClientConnectionMixin {
         }
     }
 
-    private static boolean shouldBypassSend(Packet<?> packet) {
+    private static boolean rpe$shouldBypassSend(Packet<?> packet) {
         if (packet instanceof CustomPayloadC2SPacket customPayload) {
-            return isPlayerLoadedPayload(customPayload.payload());
+            return rpe$isPlayerLoadedPayload(customPayload.payload());
         }
         return false;
     }
 
-    private static boolean shouldBypassReceive(Packet<?> packet) {
+    private static boolean rpe$shouldBypassReceive(Packet<?> packet) {
         if (packet instanceof CustomPayloadS2CPacket customPayload) {
-            return isPlayerLoadedPayload(customPayload.payload());
+            return rpe$isPlayerLoadedPayload(customPayload.payload());
         }
         return false;
     }
 
-    private static boolean isPlayerLoadedPayload(CustomPayload payload) {
+    private static boolean rpe$isPlayerLoadedPayload(CustomPayload payload) {
         return payload != null && payload.getId().equals(PLAYER_LOADED_PAYLOAD_ID);
     }
 

@@ -44,12 +44,12 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                         })
                     )
                 )
-                .then(ClientCommandManager.literal("stable")
+                .then(ClientCommandManager.literal("total")
                     .then(ClientCommandManager.argument("amount", IntegerArgumentType.integer(0))
                         .executes(ctx -> {
                             int amount = IntegerArgumentType.getInteger(ctx, "amount");
-                            PingEqualizerState.getInstance().setStablePing(amount);
-                            sendPublicMessage("Ping Equalizer: Stabilizing ping to " + amount + "ms.");
+                            PingEqualizerState.getInstance().setTotalPing(amount);
+                            sendPublicMessage("Ping Equalizer: Setting total ping to " + amount + "ms.");
                             return 1;
                         })
                     )
@@ -84,13 +84,13 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                         })
                     )
                 )
-                .then(ClientCommandManager.literal("stable")
+                .then(ClientCommandManager.literal("total")
                     .then(ClientCommandManager.argument("amount", IntegerArgumentType.integer(0))
                         .executes(ctx -> {
                             int amount = IntegerArgumentType.getInteger(ctx, "amount");
-                            PingEqualizerState.getInstance().setStablePing(amount);
-                            LOGGER.info("[RPE] Command: /pe stable {}", amount);
-                            sendPublicMessage("Ping Equalizer: Stabilizing ping to " + amount + "ms.");
+                            PingEqualizerState.getInstance().setTotalPing(amount);
+                            LOGGER.info("[RPE] Command: /pe total {}", amount);
+                            sendPublicMessage("Ping Equalizer: Setting total ping to " + amount + "ms.");
                             return 1;
                         })
                     )
