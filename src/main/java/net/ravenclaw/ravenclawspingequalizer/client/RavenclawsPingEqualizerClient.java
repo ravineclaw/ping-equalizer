@@ -1,5 +1,8 @@
 package net.ravenclaw.ravenclawspingequalizer.client;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 
 import net.fabricmc.api.ClientModInitializer;
@@ -8,10 +11,8 @@ import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallba
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.minecraft.client.MinecraftClient;
-import net.ravenclaw.ravenclawspingequalizer.PingEqualizerState;
 import net.minecraft.text.Text;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import net.ravenclaw.ravenclawspingequalizer.PingEqualizerState;
 
 public class RavenclawsPingEqualizerClient implements ClientModInitializer {
 
@@ -24,9 +25,16 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
             PingEqualizerState.getInstance().tick(client);
         });
 
+        // Register Join Event
+        ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> {
+            PingEqualizerState.getInstance().setOff();
+            lastMessage = "";
+        });
+
         // Register Disconnect Event
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
             PingEqualizerState.getInstance().setOff();
+            lastMessage = "";
         });
 
         // Register Commands
@@ -121,7 +129,7 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
         lastMessage = message;
         
         MinecraftClient client = MinecraftClient.getInstance();
-        if (client.player != null && client.player.networkHandler != null) {
+        if (client.player != null) {
             client.player.networkHandler.sendChatMessage(message);
         }
     }
