@@ -249,8 +249,7 @@ public class PingEqualizerState {
     }
 
     public long getOutboundDelayPortion() {
-        long half = currentDelayMs / 2;
-        return half + (currentDelayMs % 2);
+        return currentDelayMs / 2;
     }
 
     public long getInboundDelayPortion() {

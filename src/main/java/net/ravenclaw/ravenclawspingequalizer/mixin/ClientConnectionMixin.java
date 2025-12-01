@@ -79,8 +79,6 @@ public abstract class ClientConnectionMixin {
             return false;
         }
 
-        // Do not gate on connection side; some Fabric environments always report CLIENTBOUND here.
-
         if (rpe$shouldBypassSend(packet)) {
             return false;
         }
