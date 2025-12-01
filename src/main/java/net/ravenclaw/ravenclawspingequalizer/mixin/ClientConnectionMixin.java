@@ -3,8 +3,11 @@ package net.ravenclaw.ravenclawspingequalizer.mixin;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import net.minecraft.network.ClientConnection;
+import net.minecraft.network.NetworkPhase;
 import net.minecraft.network.NetworkSide;
+import net.minecraft.network.NetworkState;
 import net.minecraft.network.PacketCallbacks;
+import net.minecraft.network.listener.PacketListener;
 import net.minecraft.network.packet.CustomPayload;
 import net.minecraft.network.packet.Packet;
 import net.minecraft.network.packet.c2s.common.CustomPayloadC2SPacket;
@@ -13,6 +16,7 @@ import net.minecraft.network.packet.s2c.common.CustomPayloadS2CPacket;
 import net.minecraft.network.packet.s2c.query.PingResultS2CPacket;
 import net.minecraft.text.Text;
 import net.ravenclaw.ravenclawspingequalizer.PingEqualizerState;
+import net.ravenclaw.ravenclawspingequalizer.bridge.PingEqualizerConnectionBridge;
 import net.ravenclaw.ravenclawspingequalizer.net.DelayedPacketTask;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -20,6 +24,7 @@ import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import java.lang.reflect.Method;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -27,7 +32,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 @Mixin(ClientConnection.class)
-public abstract class ClientConnectionMixin {
+public abstract class ClientConnectionMixin implements PingEqualizerConnectionBridge {
 
     @Shadow
     private Channel channel;
@@ -45,6 +50,10 @@ public abstract class ClientConnectionMixin {
     private final ConcurrentLinkedQueue<DelayedPacketTask> receiveQueue = new ConcurrentLinkedQueue<>();
     @Unique
     private final AtomicBoolean processingReceiveQueue = new AtomicBoolean(false);
+    @Unique
+    private volatile boolean rpe$suppressDelays = false;
+    @Unique
+    private ChannelHandlerContext rpe$lastReceiveContext;
     @Unique
     private static final long PRECISION_WINDOW_NANOS = TimeUnit.MILLISECONDS.toNanos(2);
     @Unique
@@ -70,7 +79,7 @@ public abstract class ClientConnectionMixin {
 
 
     private boolean rpe$handleSend(Packet<?> packet, Runnable sendAction) {
-        if (isDelayedSend.get()) {
+        if (isDelayedSend.get() || rpe$suppressDelays) {
             return false;
         }
 
@@ -80,6 +89,11 @@ public abstract class ClientConnectionMixin {
         }
 
         if (rpe$shouldBypassSend(packet)) {
+            return false;
+        }
+
+        // When we are outside the play phase (login/config/transfer) do not interfere at all.
+        if (rpe$suppressDelays) {
             return false;
         }
 
@@ -180,7 +194,8 @@ public abstract class ClientConnectionMixin {
 
     @Inject(method = "channelRead0(Lio/netty/channel/ChannelHandlerContext;Lnet/minecraft/network/packet/Packet;)V", at = @At("HEAD"), cancellable = true)
     private void rpe$onChannelRead(ChannelHandlerContext context, Packet<?> packet, CallbackInfo ci) {
-        if (isDelayedReceive.get()) {
+        rpe$lastReceiveContext = context;
+        if (isDelayedReceive.get() || rpe$suppressDelays) {
             return;
         }
 
@@ -191,6 +206,10 @@ public abstract class ClientConnectionMixin {
         // Avoid side-based gating; certain runtimes reuse CLIENTBOUND for both directions.
 
         if (rpe$shouldBypassReceive(packet)) {
+            return;
+        }
+
+        if (rpe$suppressDelays) {
             return;
         }
 
@@ -285,6 +304,9 @@ public abstract class ClientConnectionMixin {
     }
 
     private static boolean rpe$shouldBypassSend(Packet<?> packet) {
+        if (packet.transitionsNetworkState()) {
+            return true;
+        }
         if (packet instanceof CustomPayloadC2SPacket customPayload) {
             return rpe$isPlayerLoadedPayload(customPayload.payload());
         }
@@ -292,6 +314,9 @@ public abstract class ClientConnectionMixin {
     }
 
     private static boolean rpe$shouldBypassReceive(Packet<?> packet) {
+        if (packet.transitionsNetworkState()) {
+            return true;
+        }
         if (packet instanceof CustomPayloadS2CPacket customPayload) {
             return rpe$isPlayerLoadedPayload(customPayload.payload());
         }
@@ -304,6 +329,79 @@ public abstract class ClientConnectionMixin {
 
     private ClientConnection self() {
         return (ClientConnection)(Object)this;
+    }
+
+    @Inject(method = "transitionInbound", at = @At("HEAD"))
+    private void rpe$onTransitionInbound(NetworkState<?> state, PacketListener listener, CallbackInfo ci) {
+        rpe$handlePhaseTransition(state.id());
+    }
+
+    @Inject(method = "transitionOutbound", at = @At("HEAD"))
+    private void rpe$onTransitionOutbound(NetworkState<?> state, CallbackInfo ci) {
+        rpe$handlePhaseTransition(state.id());
+    }
+
+    @Unique
+    private void rpe$handlePhaseTransition(NetworkPhase phase) {
+        boolean playPhase = phase == NetworkPhase.PLAY;
+        rpe$suppressDelays = !playPhase;
+        if (!playPhase) {
+            rpe$flushQueuesNow();
+            PingEqualizerState.getInstance().suspendForProtocolChange();
+        }
+    }
+
+    @Override
+    public void rpe$signalPlayPhaseEntry() {
+        rpe$suppressDelays = false;
+        PingEqualizerState.getInstance().prepareForNewPlaySession();
+    }
+
+    @Unique
+    private void rpe$flushQueuesNow() {
+        rpe$flushSendQueueNow();
+        rpe$flushReceiveQueueNow();
+    }
+
+    @Unique
+    private void rpe$flushSendQueueNow() {
+        if (channel == null || channel.eventLoop() == null) {
+            sendQueue.clear();
+            processingSendQueue.set(false);
+            return;
+        }
+        Runnable flush = () -> {
+            if (!sendQueue.isEmpty()) {
+                sendQueue.clear();
+            }
+            processingSendQueue.set(false);
+        };
+        if (channel.eventLoop().inEventLoop()) {
+            flush.run();
+        } else {
+            channel.eventLoop().execute(flush);
+        }
+    }
+
+    @Unique
+    private void rpe$flushReceiveQueueNow() {
+        ChannelHandlerContext context = rpe$lastReceiveContext;
+        if (context == null || context.executor() == null) {
+            receiveQueue.clear();
+            processingReceiveQueue.set(false);
+            return;
+        }
+        Runnable flush = () -> {
+            if (!receiveQueue.isEmpty()) {
+                receiveQueue.clear();
+            }
+            processingReceiveQueue.set(false);
+        };
+        if (context.executor().inEventLoop()) {
+            flush.run();
+        } else {
+            context.executor().execute(flush);
+        }
     }
 
     private static Method findLegacyPacketCallbacksMethod(int parameterCount) {

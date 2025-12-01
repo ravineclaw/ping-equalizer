@@ -69,8 +69,7 @@ public class PingEqualizerState {
     public void setOff() {
         currentMode = Mode.OFF;
         currentDelayMs = 0;
-        pendingPings.clear();
-        awaitingBasePing = false;
+        rpe$resetMeasurementState();
         resetMatchSmoother();
     }
 
@@ -91,6 +90,27 @@ public class PingEqualizerState {
         matchPlayerName = playerName == null ? "" : playerName.trim();
         resetMatchSmoother();
         updateDelay(MinecraftClient.getInstance());
+    }
+
+    /**
+     * Called when the connection leaves the play protocol but remains alive (e.g., proxy transfer).
+     * Keeps the selected mode while clearing transient timing state so we can re-measure later.
+     */
+    public void suspendForProtocolChange() {
+        rpe$resetMeasurementState();
+        resetMatchSmoother();
+    }
+
+    /**
+     * Called when a fresh play handler is ready (initial join or after a transfer).
+     * Ensures runtime metrics restart without forcing the player to reconfigure the mod.
+     */
+    public void prepareForNewPlaySession() {
+        rpe$resetMeasurementState();
+        resetMatchSmoother();
+        if (currentMode == Mode.ADD) {
+            currentDelayMs = addAmount;
+        }
     }
 
     public void onPingSent(long startTime) {
@@ -310,5 +330,16 @@ public class PingEqualizerState {
         if (pending != null) {
             pending.inboundDelayMs = delayMs;
         }
+    }
+
+    private void rpe$resetMeasurementState() {
+        pendingPings.clear();
+        awaitingBasePing = false;
+        lastPingRequestTime = 0;
+        lastValidBasePing = 0;
+        smoothedBasePing = 0;
+        lastBasePingSampleTime = 0;
+        lastObservedPing = 0;
+        lastObservedSampleTime = 0;
     }
 }
