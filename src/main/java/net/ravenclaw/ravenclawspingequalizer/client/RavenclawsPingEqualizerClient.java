@@ -1,138 +1,192 @@
 package net.ravenclaw.ravenclawspingequalizer.client;
 
+import java.util.ArrayDeque;
+import java.util.Deque;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.mojang.brigadier.arguments.IntegerArgumentType;
+import com.mojang.brigadier.tree.LiteralCommandNode;
 
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
+import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.network.message.ChatVisibility;
+import net.minecraft.network.packet.c2s.common.ClientOptionsC2SPacket;
+import net.minecraft.network.packet.c2s.common.SyncedClientOptions;
+import net.minecraft.text.Text;
 import net.ravenclaw.ravenclawspingequalizer.PingEqualizerState;
 import net.ravenclaw.ravenclawspingequalizer.cryptography.core.CryptoHandler;
-import net.minecraft.text.Text;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 public class RavenclawsPingEqualizerClient implements ClientModInitializer {
 
     private static final Logger LOGGER = LoggerFactory.getLogger("RavenclawsPingEqualizer");
+    private static final long SPOOF_SEND_DELAY_MS = 75L;
+    private static final long SPOOF_RESTORE_DELAY_MS = 400L;
+
+    private String lastMessage = "";
+    private final Deque<String> pendingAnnouncements = new ArrayDeque<>();
+    private boolean spoofInProgress = false;
 
     @Override
     public void onInitializeClient() {
         CryptoHandler cryptoHandler = new CryptoHandler();
 
-        // Register Tick Event
-        ClientTickEvents.END_CLIENT_TICK.register(client -> {
-            PingEqualizerState.getInstance().tick(client);
-        });
+        ClientTickEvents.END_CLIENT_TICK.register(client -> PingEqualizerState.getInstance().tick(client));
 
-        // Register Disconnect Event
-        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
-            PingEqualizerState.getInstance().setOff();
-        });
+        ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> resetAnnouncementState());
+        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> resetAnnouncementState());
 
-        // Register Commands
         ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
-            // Build command tree (pingequalizer + alias pe)
-            var root = ClientCommandManager.literal("pingequalizer")
-                .then(ClientCommandManager.literal("add")
-                    .then(ClientCommandManager.argument("amount", IntegerArgumentType.integer(0))
+            LiteralCommandNode<FabricClientCommandSource> rootNode = dispatcher.register(
+                ClientCommandManager.literal("pingequalizer")
+                    .then(ClientCommandManager.literal("add")
+                        .then(ClientCommandManager.argument("amount", IntegerArgumentType.integer(0))
+                            .executes(ctx -> {
+                                int amount = IntegerArgumentType.getInteger(ctx, "amount");
+                                if (amount == 0) {
+                                    LOGGER.info("[RPE] Command executed: /pingequalizer add 0 (disabling)");
+                                    PingEqualizerState.getInstance().setOff();
+                                    notifyStateChange("Ping Equalizer: Disabled.");
+                                } else {
+                                    LOGGER.info("[RPE] Command executed: /pingequalizer add {} (adding {} ms delay)", amount, amount);
+                                    PingEqualizerState.getInstance().setAddPing(amount);
+                                    notifyStateChange("Ping Equalizer: Added " + amount + "ms delay.");
+                                }
+                                return 1;
+                            })
+                        )
+                    )
+                    .then(ClientCommandManager.literal("total")
+                        .then(ClientCommandManager.argument("amount", IntegerArgumentType.integer(0))
+                            .executes(ctx -> {
+                                int amount = IntegerArgumentType.getInteger(ctx, "amount");
+                                if (amount == 0) {
+                                    LOGGER.info("[RPE] Command executed: /pingequalizer total 0 (disabling)");
+                                    PingEqualizerState.getInstance().setOff();
+                                    notifyStateChange("Ping Equalizer: Disabled.");
+                                } else {
+                                    LOGGER.info("[RPE] Command executed: /pingequalizer total {} (setting total ping to {} ms)", amount, amount);
+                                    PingEqualizerState.getInstance().setTotalPing(amount);
+                                    notifyStateChange("Ping Equalizer: Setting total ping to " + amount + "ms.");
+                                }
+                                return 1;
+                            })
+                        )
+                    )
+                    .then(ClientCommandManager.literal("status")
                         .executes(ctx -> {
-                            int amount = IntegerArgumentType.getInteger(ctx, "amount");
-                            PingEqualizerState.getInstance().setAddPing(amount);
-                            LOGGER.info("[RPE] Command: /pingequalizer add {}", amount);
-                            sendPublicMessage("Ping Equalizer: Added " + amount + "ms delay.");
+                            String status = PingEqualizerState.getInstance().getStatusMessage();
+                            LOGGER.info("[RPE] Command executed: /pingequalizer status -> {}", status);
+                            sendLocalMessage(status);
                             return 1;
                         })
                     )
-                )
-                .then(ClientCommandManager.literal("stable")
-                    .then(ClientCommandManager.argument("amount", IntegerArgumentType.integer(0))
+                    .then(ClientCommandManager.literal("off")
                         .executes(ctx -> {
-                            int amount = IntegerArgumentType.getInteger(ctx, "amount");
-                            PingEqualizerState.getInstance().setStablePing(amount);
-                            sendPublicMessage("Ping Equalizer: Stabilizing ping to " + amount + "ms.");
+                            LOGGER.info("[RPE] Command executed: /pingequalizer off (disabling)");
+                            PingEqualizerState.getInstance().setOff();
+                            notifyStateChange("Ping Equalizer: Disabled.");
                             return 1;
                         })
                     )
-                )
-                .then(ClientCommandManager.literal("status")
-                    .executes(ctx -> {
-                        sendClientMessage(PingEqualizerState.getInstance().getStatusMessage());
-                        return 1;
-                    })
-                )
-                .then(ClientCommandManager.literal("off")
-                    .executes(ctx -> {
-                        PingEqualizerState.getInstance().setOff();
-                        LOGGER.info("[RPE] Command: /pingequalizer off");
-                        sendPublicMessage("Ping Equalizer: Disabled.");
-                        return 1;
-                    })
-                );
+            );
 
-            // Register main command
-            dispatcher.register(root);
-            // Register alias /pe with identical structure
-            var alias = ClientCommandManager.literal("pe")
-                .then(ClientCommandManager.literal("add")
-                    .then(ClientCommandManager.argument("amount", IntegerArgumentType.integer(0))
-                        .executes(ctx -> {
-                            int amount = IntegerArgumentType.getInteger(ctx, "amount");
-                            PingEqualizerState.getInstance().setAddPing(amount);
-                            LOGGER.info("[RPE] Command: /pe add {}", amount);
-                            sendPublicMessage("Ping Equalizer: Added " + amount + "ms delay.");
-                            return 1;
-                        })
-                    )
-                )
-                .then(ClientCommandManager.literal("stable")
-                    .then(ClientCommandManager.argument("amount", IntegerArgumentType.integer(0))
-                        .executes(ctx -> {
-                            int amount = IntegerArgumentType.getInteger(ctx, "amount");
-                            PingEqualizerState.getInstance().setStablePing(amount);
-                            LOGGER.info("[RPE] Command: /pe stable {}", amount);
-                            sendPublicMessage("Ping Equalizer: Stabilizing ping to " + amount + "ms.");
-                            return 1;
-                        })
-                    )
-                )
-                .then(ClientCommandManager.literal("status")
-                    .executes(ctx -> {
-                        LOGGER.info("[RPE] Command: /pe status");
-                        sendClientMessage(PingEqualizerState.getInstance().getStatusMessage());
-                        return 1;
-                    })
-                )
-                .then(ClientCommandManager.literal("off")
-                    .executes(ctx -> {
-                        PingEqualizerState.getInstance().setOff();
-                        LOGGER.info("[RPE] Command: /pe off");
-                        sendPublicMessage("Ping Equalizer: Disabled.");
-                        return 1;
-                    })
-                );
-            dispatcher.register(alias);
+            dispatcher.register(ClientCommandManager.literal("pe").redirect(rootNode));
         });
 
 
         cryptoHandler.init();
     }
 
-    private String lastMessage = "";
-
-    private void sendPublicMessage(String message) {
-        if (message.equals(lastMessage)) return;
-        lastMessage = message;
-        
-        MinecraftClient client = MinecraftClient.getInstance();
-        if (client.player != null && client.player.networkHandler != null) {
-            client.player.networkHandler.sendChatMessage(message);
-        }
+    private void resetAnnouncementState() {
+        lastMessage = "";
+        pendingAnnouncements.clear();
+        spoofInProgress = false;
     }
 
-    private void sendClientMessage(String message) {
+    private void notifyStateChange(String message) {
+        if (message.equals(lastMessage)) {
+            return;
+        }
+        lastMessage = message;
+        LOGGER.info("[RPE] {}", message);
+
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.player == null) {
+            return;
+        }
+
+        pendingAnnouncements.addLast(message);
+        processPendingAnnouncements(client);
+    }
+
+    private void processPendingAnnouncements(MinecraftClient client) {
+        if (spoofInProgress || client.player == null) {
+            return;
+        }
+
+        String next = pendingAnnouncements.pollFirst();
+        if (next == null) {
+            return;
+        }
+
+        ChatVisibility currentVisibility = client.options.getChatVisibility().getValue();
+        if (currentVisibility == ChatVisibility.FULL) {
+            client.player.networkHandler.sendChatMessage(next);
+            processPendingAnnouncements(client);
+            return;
+        }
+
+        spoofInProgress = true;
+        SyncedClientOptions originalOptions = client.options.getSyncedOptions();
+        SyncedClientOptions forcedOptions = copyWithVisibility(originalOptions, ChatVisibility.FULL);
+
+        client.player.networkHandler.sendPacket(new ClientOptionsC2SPacket(forcedOptions));
+
+        CompletableFuture.delayedExecutor(SPOOF_SEND_DELAY_MS, TimeUnit.MILLISECONDS).execute(() ->
+            client.execute(() -> {
+                if (client.player == null) {
+                    spoofInProgress = false;
+                    return;
+                }
+
+                client.player.networkHandler.sendChatMessage(next);
+
+                CompletableFuture.delayedExecutor(SPOOF_RESTORE_DELAY_MS, TimeUnit.MILLISECONDS).execute(() ->
+                    client.execute(() -> {
+                        if (client.player != null) {
+                            client.player.networkHandler.sendPacket(new ClientOptionsC2SPacket(originalOptions));
+                        }
+                        spoofInProgress = false;
+                        processPendingAnnouncements(client);
+                    })
+                );
+            })
+        );
+    }
+
+    private static SyncedClientOptions copyWithVisibility(SyncedClientOptions base, ChatVisibility visibility) {
+        return new SyncedClientOptions(
+            base.language(),
+            base.viewDistance(),
+            visibility,
+            base.chatColorsEnabled(),
+            base.playerModelParts(),
+            base.mainArm(),
+            base.filtersText(),
+            base.allowsServerListing()
+        );
+    }
+
+    private void sendLocalMessage(String message) {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player != null) {
             client.player.sendMessage(Text.literal(message), false);
