@@ -1,14 +1,14 @@
 package net.ravenclaw.ravenclawspingequalizer;
 
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayNetworkHandler;
 import net.minecraft.client.network.PlayerListEntry;
 import net.minecraft.network.packet.c2s.query.QueryPingC2SPacket;
 import net.minecraft.network.packet.s2c.query.PingResultS2CPacket;
 import net.minecraft.util.Util;
-
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Manages ping equalization state and delay calculations.
@@ -36,6 +36,7 @@ public class PingEqualizerState {
 
     // Current additive delay (full RTT we are adding). Split evenly on send/receive.
     private long currentDelayMs = 0;
+    private double preciseDelay = 0;
 
     // Base ping tracking (attempt to measure underlying RTT excluding our artificial delay)
     private int lastValidBasePing = 0;        // Last measured base ping (ms)
@@ -69,6 +70,7 @@ public class PingEqualizerState {
     public void setOff() {
         currentMode = Mode.OFF;
         currentDelayMs = 0;
+        preciseDelay = 0;
         rpe$resetMeasurementState();
         resetMatchSmoother();
     }
@@ -77,6 +79,7 @@ public class PingEqualizerState {
         currentMode = Mode.ADD;
         addAmount = Math.max(0, amount);
         currentDelayMs = addAmount;
+        preciseDelay = addAmount;
     }
 
     public void setTotalPing(int target) {
@@ -110,6 +113,7 @@ public class PingEqualizerState {
         resetMatchSmoother();
         if (currentMode == Mode.ADD) {
             currentDelayMs = addAmount;
+            preciseDelay = addAmount;
         }
     }
 
@@ -153,7 +157,7 @@ public class PingEqualizerState {
         lastValidBasePing = (int) estimatedBase;
         smoothedBasePing = smoothedBasePing == 0
             ? estimatedBase
-            : smoothedBasePing * 0.85 + estimatedBase * 0.15;
+            : smoothedBasePing * 0.95 + estimatedBase * 0.05;
         lastBasePingSampleTime = now;
         awaitingBasePing = false;
 
@@ -175,7 +179,7 @@ public class PingEqualizerState {
     }
 
     private int getCalibratedBase() {
-        return lastValidBasePing;
+        return (int) Math.round(smoothedBasePing > 0 ? smoothedBasePing : lastValidBasePing);
     }
 
     private int computeTargetPing(ClientPlayNetworkHandler handler, int basePing) {
@@ -220,7 +224,25 @@ public class PingEqualizerState {
             return;
         }
 
-        currentDelayMs = Math.max(0, targetPing - basePing);
+        long targetDelay = Math.max(0, targetPing - basePing);
+
+        if (preciseDelay != targetDelay) {
+            double diff = targetDelay - preciseDelay;
+            double maxStep = 5.0; // Max 5ms change per tick
+            double step = diff * 0.1; // 10% approach
+            
+            if (Math.abs(step) > maxStep) {
+                step = Math.signum(step) * maxStep;
+            }
+            
+            preciseDelay += step;
+            
+            if (Math.abs(targetDelay - preciseDelay) < 0.5) {
+                preciseDelay = targetDelay;
+            }
+            
+            currentDelayMs = (long) Math.round(preciseDelay);
+        }
     }
 
     private void requestPingIfNeeded(ClientPlayNetworkHandler handler, boolean force) {
