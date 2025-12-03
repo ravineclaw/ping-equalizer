@@ -81,19 +81,21 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
         }
 
         PingEqualizerState state = PingEqualizerState.getInstance();
-        if (state.getMode() == PingEqualizerState.Mode.OFF) {
+        boolean shouldBypass = rpe$shouldBypassSend(packet);
+
+        if (shouldBypass && sendQueue.isEmpty()) {
             return false;
         }
 
-        if (rpe$shouldBypassSend(packet)) {
-            return false;
-        }
-
-        if (rpe$suppressDelays) {
+        if (state.getMode() == PingEqualizerState.Mode.OFF && sendQueue.isEmpty()) {
             return false;
         }
 
         long delay = state.getOutboundDelayPortion();
+        if (shouldBypass) {
+            delay = 0;
+        }
+
         if (delay <= 0 && sendQueue.isEmpty()) {
             if (packet instanceof QueryPingC2SPacket pingPacket) {
                 state.onPingActuallySent(pingPacket.getStartTime());
@@ -194,19 +196,21 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
         }
 
         PingEqualizerState state = PingEqualizerState.getInstance();
-        if (state.getMode() == PingEqualizerState.Mode.OFF) {
+        boolean shouldBypass = rpe$shouldBypassReceive(packet);
+
+        if (shouldBypass && receiveQueue.isEmpty()) {
             return;
         }
 
-        if (rpe$shouldBypassReceive(packet)) {
-            return;
-        }
-
-        if (rpe$suppressDelays) {
+        if (state.getMode() == PingEqualizerState.Mode.OFF && receiveQueue.isEmpty()) {
             return;
         }
 
         long delay = state.getInboundDelayPortion();
+        if (shouldBypass) {
+            delay = 0;
+        }
+
         if ((delay <= 0 && receiveQueue.isEmpty()) || !self().isOpen() || context.executor() == null) {
             if (packet instanceof PingResultS2CPacket pingResult) {
                 state.onPingArrived(pingResult.startTime());
