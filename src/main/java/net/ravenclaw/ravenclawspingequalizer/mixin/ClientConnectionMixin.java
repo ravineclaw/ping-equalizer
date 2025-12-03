@@ -1,6 +1,5 @@
 package net.ravenclaw.ravenclawspingequalizer.mixin;
 
-import java.lang.reflect.Method;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -59,10 +58,6 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
     private static final long MIN_RESCHEDULE_NANOS = TimeUnit.MILLISECONDS.toNanos(1);
     @Unique
     private static final CustomPayload.Id<?> PLAYER_LOADED_PAYLOAD_ID = CustomPayload.id("player_loaded");
-    @Unique
-    private static final Method LEGACY_SEND_PACKET_CALLBACKS = findLegacyPacketCallbacksMethod(2);
-    @Unique
-    private static final Method LEGACY_SEND_PACKET_CALLBACKS_FLUSH = findLegacyPacketCallbacksMethod(3);
 
     @Inject(method = "send(Lnet/minecraft/network/packet/Packet;)V", at = @At("HEAD"), cancellable = true, require = 0)
     private void rpe$onSendSimple(Packet<?> packet, CallbackInfo ci) {
@@ -74,6 +69,19 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
         }
     }
 
+    @Inject(method = "send(Lnet/minecraft/network/packet/Packet;Lnet/minecraft/network/PacketCallbacks;)V", at = @At("HEAD"), cancellable = true, require = 0)
+    private void rpe$onSendWithCallbacks(Packet<?> packet, PacketCallbacks callbacks, CallbackInfo ci) {
+        if (rpe$handleSend(packet, () -> self().send(packet, callbacks))) {
+            ci.cancel();
+        }
+    }
+
+    @Inject(method = "send(Lnet/minecraft/network/packet/Packet;Lnet/minecraft/network/PacketCallbacks;Z)V", at = @At("HEAD"), cancellable = true, require = 0)
+    private void rpe$onSendWithCallbacksAndFlush(Packet<?> packet, PacketCallbacks callbacks, boolean flush, CallbackInfo ci) {
+        if (rpe$handleSend(packet, () -> self().send(packet, callbacks, flush))) {
+            ci.cancel();
+        }
+    }
 
     private boolean rpe$handleSend(Packet<?> packet, Runnable sendAction) {
         if (isDelayedSend.get() || rpe$suppressDelays) {
@@ -81,7 +89,7 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
         }
 
         PingEqualizerState state = PingEqualizerState.getInstance();
-        boolean shouldBypass = rpe$shouldBypassSend(packet);
+        boolean shouldBypass = rpe$shouldBypass(packet);
 
         if (shouldBypass && sendQueue.isEmpty()) {
             return false;
@@ -158,7 +166,7 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
                             }
                             sendAction.run();
                         } finally {
-                            isDelayedSend.set(false);
+                            isDelayedSend.remove();
                         }
                     }
                     continue;
@@ -196,7 +204,7 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
         }
 
         PingEqualizerState state = PingEqualizerState.getInstance();
-        boolean shouldBypass = rpe$shouldBypassReceive(packet);
+        boolean shouldBypass = rpe$shouldBypass(packet);
 
         if (shouldBypass && receiveQueue.isEmpty()) {
             return;
@@ -269,7 +277,7 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
                             }
                             this.channelRead0(context, task.packet);
                         } finally {
-                            isDelayedReceive.set(false);
+                            isDelayedReceive.remove();
                         }
                     }
                 } else {
@@ -300,24 +308,18 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
         }
     }
 
-    private static boolean rpe$shouldBypassSend(Packet<?> packet) {
+    private static boolean rpe$shouldBypass(Packet<?> packet) {
         if (packet.transitionsNetworkState()) {
             return true;
         }
-        if (packet instanceof CustomPayloadC2SPacket customPayload) {
-            return rpe$isPlayerLoadedPayload(customPayload.payload());
+        CustomPayload payload = null;
+        if (packet instanceof CustomPayloadC2SPacket c2s) {
+            payload = c2s.payload();
+        } else if (packet instanceof CustomPayloadS2CPacket s2c) {
+            payload = s2c.payload();
         }
-        return false;
-    }
-
-    private static boolean rpe$shouldBypassReceive(Packet<?> packet) {
-        if (packet.transitionsNetworkState()) {
-            return true;
-        }
-        if (packet instanceof CustomPayloadS2CPacket customPayload) {
-            return rpe$isPlayerLoadedPayload(customPayload.payload());
-        }
-        return false;
+        
+        return rpe$isPlayerLoadedPayload(payload);
     }
 
     private static boolean rpe$isPlayerLoadedPayload(CustomPayload payload) {
@@ -398,47 +400,6 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
             flush.run();
         } else {
             context.executor().execute(flush);
-        }
-    }
-
-    private static Method findLegacyPacketCallbacksMethod(int parameterCount) {
-        try {
-            for (Method method : ClientConnection.class.getDeclaredMethods()) {
-                Class<?>[] parameters = method.getParameterTypes();
-                if (parameters.length == parameterCount
-                        && Packet.class.isAssignableFrom(parameters[0])
-                        && parameters[1] == PacketCallbacks.class
-                        && (parameterCount == 2 || parameters[2] == boolean.class)) {
-                    method.setAccessible(true);
-                    return method;
-                }
-            }
-        } catch (Throwable ignored) {
-        }
-        return null;
-    }
-
-    private void invokeLegacySend(Packet<?> packet, PacketCallbacks callbacks) {
-        Method method = LEGACY_SEND_PACKET_CALLBACKS;
-        if (method == null) {
-            throw new IllegalStateException("Legacy send(Packet, PacketCallbacks) is unavailable in this runtime");
-        }
-        try {
-            method.invoke(self(), packet, callbacks);
-        } catch (ReflectiveOperationException e) {
-            throw new RuntimeException("Failed to invoke legacy send(Packet, PacketCallbacks)", e);
-        }
-    }
-
-    private void invokeLegacySend(Packet<?> packet, PacketCallbacks callbacks, boolean flush) {
-        Method method = LEGACY_SEND_PACKET_CALLBACKS_FLUSH;
-        if (method == null) {
-            throw new IllegalStateException("Legacy send(Packet, PacketCallbacks, boolean) is unavailable in this runtime");
-        }
-        try {
-            method.invoke(self(), packet, callbacks, flush);
-        } catch (ReflectiveOperationException e) {
-            throw new RuntimeException("Failed to invoke legacy send(Packet, PacketCallbacks, boolean)", e);
         }
     }
 }
