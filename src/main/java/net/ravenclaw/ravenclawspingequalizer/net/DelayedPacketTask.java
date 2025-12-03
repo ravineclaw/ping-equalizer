@@ -4,9 +4,6 @@ import org.jetbrains.annotations.Nullable;
 
 import net.minecraft.network.packet.Packet;
 
-/**
- * Simple value object for delayed packet scheduling.
- */
 public final class DelayedPacketTask {
     public final Packet<?> packet;
     public final long sendTimeNanos;

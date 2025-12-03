@@ -1,10 +1,21 @@
 package net.ravenclaw.ravenclawspingequalizer.mixin;
 
+import java.lang.reflect.Method;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Shadow;
+import org.spongepowered.asm.mixin.Unique;
+import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import net.minecraft.network.ClientConnection;
 import net.minecraft.network.NetworkPhase;
-import net.minecraft.network.NetworkSide;
 import net.minecraft.network.NetworkState;
 import net.minecraft.network.PacketCallbacks;
 import net.minecraft.network.listener.PacketListener;
@@ -18,18 +29,6 @@ import net.minecraft.text.Text;
 import net.ravenclaw.ravenclawspingequalizer.PingEqualizerState;
 import net.ravenclaw.ravenclawspingequalizer.bridge.PingEqualizerConnectionBridge;
 import net.ravenclaw.ravenclawspingequalizer.net.DelayedPacketTask;
-import org.spongepowered.asm.mixin.Mixin;
-import org.spongepowered.asm.mixin.Shadow;
-import org.spongepowered.asm.mixin.Unique;
-import org.spongepowered.asm.mixin.injection.At;
-import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
-
-import java.lang.reflect.Method;
-import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 @Mixin(ClientConnection.class)
 public abstract class ClientConnectionMixin implements PingEqualizerConnectionBridge {
@@ -58,7 +57,6 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
     private static final long PRECISION_WINDOW_NANOS = TimeUnit.MILLISECONDS.toNanos(2);
     @Unique
     private static final long MIN_RESCHEDULE_NANOS = TimeUnit.MILLISECONDS.toNanos(1);
-    // The client must forward minecraft:player_loaded immediately so newer servers finish login.
     @Unique
     private static final CustomPayload.Id<?> PLAYER_LOADED_PAYLOAD_ID = CustomPayload.id("player_loaded");
     @Unique
@@ -68,7 +66,6 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
 
     @Inject(method = "send(Lnet/minecraft/network/packet/Packet;)V", at = @At("HEAD"), cancellable = true, require = 0)
     private void rpe$onSendSimple(Packet<?> packet, CallbackInfo ci) {
-        // Register queued ping start time early so result can correlate even if cancellation occurs
         if (packet instanceof QueryPingC2SPacket qp) {
             PingEqualizerState.getInstance().onPingSent(qp.getStartTime());
         }
@@ -92,18 +89,16 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
             return false;
         }
 
-        // When we are outside the play phase (login/config/transfer) do not interfere at all.
         if (rpe$suppressDelays) {
             return false;
         }
 
         long delay = state.getOutboundDelayPortion();
-        // No delay requested -> send immediately but still record ping timing.
         if (delay <= 0 && sendQueue.isEmpty()) {
             if (packet instanceof QueryPingC2SPacket pingPacket) {
                 state.onPingActuallySent(pingPacket.getStartTime());
             }
-            return false; // send normally
+            return false;
         }
         if (!self().isOpen() || channel == null || channel.eventLoop() == null) {
             return false;
@@ -156,7 +151,6 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
 
                         isDelayedSend.set(true);
                         try {
-                            // Track when QueryPing is actually sent (after delay)
                             if (task.packet instanceof QueryPingC2SPacket pingPacket) {
                                 PingEqualizerState.getInstance().onPingActuallySent(pingPacket.getStartTime());
                             }
@@ -203,7 +197,6 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
         if (state.getMode() == PingEqualizerState.Mode.OFF) {
             return;
         }
-        // Avoid side-based gating; certain runtimes reuse CLIENTBOUND for both directions.
 
         if (rpe$shouldBypassReceive(packet)) {
             return;
