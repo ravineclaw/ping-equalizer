@@ -10,6 +10,8 @@ import net.minecraft.network.packet.c2s.query.QueryPingC2SPacket;
 import net.minecraft.network.packet.s2c.query.PingResultS2CPacket;
 import net.minecraft.util.Util;
 
+import net.ravenclaw.ravenclawspingequalizer.session.SessionManager;
+
 /**
  * Manages ping equalization state and delay calculations.
  * Modes: ADD (fixed added RTT), TOTAL (target total RTT), MATCH (match another player's reported ping).
@@ -167,6 +169,8 @@ public class PingEqualizerState {
 
     public void tick(MinecraftClient client) {
         updateDelay(client);
+        SessionManager.getInstance().setAddedDelayMs(currentDelayMs);
+        SessionManager.getInstance().setBasePingMs(lastValidBasePing);
     }
 
     private void resetMatchSmoother() {

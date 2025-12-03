@@ -84,11 +84,6 @@ public class CryptoUtils {
         return sb.toString();
     }
 
-    /**
-     * Sign using an embedded/private key string (PEM). If parsing fails, fall back to
-     * the deterministic SHA-256(privateKeyString || payload) digest to preserve
-     * existing behavior for dev builds.
-     */
     public static byte[] signPayload(byte[] payload, String privateKeyPemOrString) {
         try {
             try {
@@ -110,9 +105,6 @@ public class CryptoUtils {
         }
     }
 
-    /**
-     * Sign payload with a PrivateKey and return the signature as Base64 string.
-     */
     public static String signPayload(byte[] payload, PrivateKey privateKey) {
         try {
             Signature sig = Signature.getInstance("SHA256withRSA");
@@ -135,9 +127,6 @@ public class CryptoUtils {
         }
     }
 
-    /**
-     * Convenience: returns mod hash as hex string.
-     */
     public static String calculateModHashHex() {
         byte[] hash = calculateModHash();
         return bytesToHex(hash);
@@ -191,4 +180,40 @@ public class CryptoUtils {
         }
     }
 
+    public static boolean verifySignature(byte[] payload, byte[] signatureBytes, PublicKey publicKey) {
+        try {
+            Signature sig = Signature.getInstance("SHA256withRSA");
+            sig.initVerify(publicKey);
+            sig.update(payload);
+            return sig.verify(signatureBytes);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to verify signature", e);
+        }
+    }
+
+    public static PublicKey parsePublicKeyFromPEM(String pem) throws GeneralSecurityException {
+        String normalized = pem.trim();
+        if (normalized.contains("-----BEGIN")) {
+            normalized = normalized.replaceAll("-----BEGIN [A-Z ]+-----", "");
+            normalized = normalized.replaceAll("-----END [A-Z ]+-----", "");
+        }
+        normalized = normalized.replaceAll("\\s", "");
+        byte[] decoded = Base64.getDecoder().decode(normalized);
+        java.security.spec.X509EncodedKeySpec spec = new java.security.spec.X509EncodedKeySpec(decoded);
+        KeyFactory kf = KeyFactory.getInstance("RSA");
+        return kf.generatePublic(spec);
+    }
+
+    public static boolean verifyServerSignature(String data, String signatureBase64) {
+        try {
+            PublicKey serverKey = parsePublicKeyFromPEM(ServerKey.PUBLIC_KEY);
+            Signature sig = Signature.getInstance("SHA256withRSA");
+            sig.initVerify(serverKey);
+            sig.update(data.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return sig.verify(Base64.getDecoder().decode(signatureBase64));
+        } catch (Exception e) {
+            e.printStackTrace();
+            return false;
+        }
+    }
 }

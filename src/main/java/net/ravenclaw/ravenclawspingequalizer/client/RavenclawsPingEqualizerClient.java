@@ -9,6 +9,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.mojang.brigadier.arguments.IntegerArgumentType;
+import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.tree.LiteralCommandNode;
 
 import net.fabricmc.api.ClientModInitializer;
@@ -17,13 +18,18 @@ import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallba
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
+import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.network.message.ChatVisibility;
 import net.minecraft.network.packet.c2s.common.ClientOptionsC2SPacket;
 import net.minecraft.network.packet.c2s.common.SyncedClientOptions;
 import net.minecraft.text.Text;
+import net.minecraft.util.Formatting;
 import net.ravenclaw.ravenclawspingequalizer.PingEqualizerState;
-import net.ravenclaw.ravenclawspingequalizer.cryptography.core.CryptoHandler;
+import net.ravenclaw.ravenclawspingequalizer.cryptography.CryptoUtils;
+import net.ravenclaw.ravenclawspingequalizer.network.NetworkClient;
+import net.ravenclaw.ravenclawspingequalizer.network.model.ValidationResult;
+import net.ravenclaw.ravenclawspingequalizer.session.SessionManager;
 
 public class RavenclawsPingEqualizerClient implements ClientModInitializer {
 
@@ -34,12 +40,37 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
     private String lastMessage = "";
     private final Deque<String> pendingAnnouncements = new ArrayDeque<>();
     private boolean spoofInProgress = false;
+    private int tickCounter = 0;
 
     @Override
     public void onInitializeClient() {
-        CryptoHandler cryptoHandler = new CryptoHandler();
+        // Initialize Session
+        SessionManager session = SessionManager.getInstance();
+        session.setModHash(CryptoUtils.calculateModHashHex());
+        FabricLoader.getInstance().getModContainer("ravenclawspingequalizer").ifPresent(container -> 
+            session.setModVersion(container.getMetadata().getVersion().getFriendlyString())
+        );
+        session.setSessionKeyPair(CryptoUtils.generateSessionKeyPair());
 
-        ClientTickEvents.END_CLIENT_TICK.register(client -> PingEqualizerState.getInstance().tick(client));
+        // Register with backend
+        NetworkClient.register();
+
+        // Shutdown hook
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            LOGGER.info("[RPE] Shutting down, unregistering session...");
+            NetworkClient.unregister();
+        }));
+
+        ClientTickEvents.END_CLIENT_TICK.register(client -> {
+            PingEqualizerState.getInstance().tick(client);
+            
+            // Heartbeat every 60 seconds (approx 1200 ticks)
+            tickCounter++;
+            if (tickCounter >= 1200) {
+                tickCounter = 0;
+                NetworkClient.heartbeat();
+            }
+        });
 
         ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> resetAnnouncementState());
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> resetAnnouncementState());
@@ -97,13 +128,39 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                             return 1;
                         })
                     )
+                    .then(ClientCommandManager.literal("validate")
+                        .then(ClientCommandManager.argument("username", StringArgumentType.string())
+                            .executes(ctx -> {
+                                String username = StringArgumentType.getString(ctx, "username");
+                                sendLocalMessage("Validating " + username + "...");
+                                NetworkClient.validateUser(username).thenAccept(result -> {
+                                    Text message;
+                                    if (result != null && result.isFound()) {
+                                        String details = String.format(" (v%s, +%dms, base: %dms)", 
+                                            result.getModVersion(), 
+                                            result.getAddedDelayMs(), 
+                                            result.getBasePingMs());
+                                        
+                                        if ("VALIDATED".equals(result.getStatus())) {
+                                            message = Text.literal("✓ " + result.getPlayerUsername() + ": Validated" + details).formatted(Formatting.GREEN);
+                                        } else {
+                                            message = Text.literal("? " + result.getPlayerUsername() + ": " + result.getStatus() + details).formatted(Formatting.YELLOW);
+                                        }
+                                    } else {
+                                        message = Text.literal("✗ " + username + ": Not found or not validated").formatted(Formatting.RED);
+                                    }
+                                    if (MinecraftClient.getInstance().player != null) {
+                                        MinecraftClient.getInstance().player.sendMessage(message, false);
+                                    }
+                                });
+                                return 1;
+                            })
+                        )
+                    )
             );
 
             dispatcher.register(ClientCommandManager.literal("pe").redirect(rootNode));
         });
-
-
-        cryptoHandler.init();
     }
 
     private void resetAnnouncementState() {
@@ -192,6 +249,4 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
             client.player.sendMessage(Text.literal(message), false);
         }
     }
-
-    // test comment to change hash
 }
