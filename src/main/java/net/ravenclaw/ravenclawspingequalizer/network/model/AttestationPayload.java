@@ -3,23 +3,23 @@ package net.ravenclaw.ravenclawspingequalizer.network.model;
 import com.google.gson.annotations.SerializedName;
 
 public class AttestationPayload {
-    @SerializedName("sessionId")
+    @SerializedName("a")
     public String sessionId;
-    @SerializedName("challengeResponse")
+    @SerializedName("b")
     public String challengeResponse;
-    @SerializedName("mojangProof")
+    @SerializedName("c")
     public String mojangProof;
-    @SerializedName("username")
+    @SerializedName("d")
     public String username;
-    @SerializedName("modHash")
+    @SerializedName("e")
     public String modHash;
-    @SerializedName("modVersion")
+    @SerializedName("f")
     public String modVersion;
-    @SerializedName("timestamp")
+    @SerializedName("g")
     public long timestamp;
-    @SerializedName("addedDelayMs")
+    @SerializedName("h")
     public long addedDelayMs;
-    @SerializedName("basePingMs")
+    @SerializedName("i")
     public long basePingMs;
 
     public AttestationPayload(String sessionId, String challengeResponse, String mojangProof, String username, String modHash, String modVersion, long timestamp, long addedDelayMs, long basePingMs) {

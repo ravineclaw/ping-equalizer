@@ -5,9 +5,6 @@ import java.util.Deque;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.tree.LiteralCommandNode;
@@ -33,7 +30,6 @@ import net.ravenclaw.ravenclawspingequalizer.session.SessionManager;
 
 public class RavenclawsPingEqualizerClient implements ClientModInitializer {
 
-    private static final Logger LOGGER = LoggerFactory.getLogger("RavenclawsPingEqualizer");
     private static final long SPOOF_SEND_DELAY_MS = 75L;
     private static final long SPOOF_RESTORE_DELAY_MS = 400L;
 
@@ -44,7 +40,6 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
 
     @Override
     public void onInitializeClient() {
-        // Initialize Session
         SessionManager session = SessionManager.getInstance();
         session.setModHash(CryptoUtils.calculateModHashHex());
         FabricLoader.getInstance().getModContainer("ravenclawspingequalizer").ifPresent(container -> 
@@ -52,19 +47,15 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
         );
         session.setSessionKeyPair(CryptoUtils.generateSessionKeyPair());
 
-        // Register with backend
         NetworkClient.register();
 
-        // Shutdown hook
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            LOGGER.info("[RPE] Shutting down, unregistering session...");
             NetworkClient.unregister();
         }));
 
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             PingEqualizerState.getInstance().tick(client);
             
-            // Heartbeat every 60 seconds (approx 1200 ticks)
             tickCounter++;
             if (tickCounter >= 1200) {
                 tickCounter = 0;
@@ -83,13 +74,11 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                             .executes(ctx -> {
                                 int amount = IntegerArgumentType.getInteger(ctx, "amount");
                                 if (amount == 0) {
-                                    LOGGER.info("[RPE] Command executed: /pingequalizer add 0 (disabling)");
                                     PingEqualizerState.getInstance().setOff();
-                                    notifyStateChange("Ping Equalizer: Disabled.");
+                                    notifyStateChange("PE: Off");
                                 } else {
-                                    LOGGER.info("[RPE] Command executed: /pingequalizer add {} (adding {} ms delay)", amount, amount);
                                     PingEqualizerState.getInstance().setAddPing(amount);
-                                    notifyStateChange("Ping Equalizer: Added " + amount + "ms delay.");
+                                    notifyStateChange("PE: +" + amount);
                                 }
                                 return 1;
                             })
@@ -100,13 +89,11 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                             .executes(ctx -> {
                                 int amount = IntegerArgumentType.getInteger(ctx, "amount");
                                 if (amount == 0) {
-                                    LOGGER.info("[RPE] Command executed: /pingequalizer total 0 (disabling)");
                                     PingEqualizerState.getInstance().setOff();
-                                    notifyStateChange("Ping Equalizer: Disabled.");
+                                    notifyStateChange("PE: Off");
                                 } else {
-                                    LOGGER.info("[RPE] Command executed: /pingequalizer total {} (setting total ping to {} ms)", amount, amount);
                                     PingEqualizerState.getInstance().setTotalPing(amount);
-                                    notifyStateChange("Ping Equalizer: Setting total ping to " + amount + "ms.");
+                                    notifyStateChange("PE: =" + amount);
                                 }
                                 return 1;
                             })
@@ -115,16 +102,14 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                     .then(ClientCommandManager.literal("status")
                         .executes(ctx -> {
                             String status = PingEqualizerState.getInstance().getStatusMessage();
-                            LOGGER.info("[RPE] Command executed: /pingequalizer status -> {}", status);
                             sendLocalMessage(status);
                             return 1;
                         })
                     )
                     .then(ClientCommandManager.literal("off")
                         .executes(ctx -> {
-                            LOGGER.info("[RPE] Command executed: /pingequalizer off (disabling)");
                             PingEqualizerState.getInstance().setOff();
-                            notifyStateChange("Ping Equalizer: Disabled.");
+                            notifyStateChange("PE: Off");
                             return 1;
                         })
                     )
@@ -132,22 +117,22 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                         .then(ClientCommandManager.argument("username", StringArgumentType.string())
                             .executes(ctx -> {
                                 String username = StringArgumentType.getString(ctx, "username");
-                                sendLocalMessage("Validating " + username + "...");
+                                sendLocalMessage("...");
                                 NetworkClient.validateUser(username).thenAccept(result -> {
                                     Text message;
                                     if (result != null && result.isFound()) {
-                                        String details = String.format(" (v%s, +%dms, base: %dms)", 
+                                        String details = String.format(" (v%s, +%dms, b:%dms)", 
                                             result.getModVersion(), 
                                             result.getAddedDelayMs(), 
                                             result.getBasePingMs());
                                         
                                         if ("VALIDATED".equals(result.getStatus())) {
-                                            message = Text.literal("✓ " + result.getPlayerUsername() + ": Validated" + details).formatted(Formatting.GREEN);
+                                            message = Text.literal("+ " + result.getPlayerUsername() + details).formatted(Formatting.GREEN);
                                         } else {
                                             message = Text.literal("? " + result.getPlayerUsername() + ": " + result.getStatus() + details).formatted(Formatting.YELLOW);
                                         }
                                     } else {
-                                        message = Text.literal("✗ " + username + ": Not found or not validated").formatted(Formatting.RED);
+                                        message = Text.literal("- " + username).formatted(Formatting.RED);
                                     }
                                     if (MinecraftClient.getInstance().player != null) {
                                         MinecraftClient.getInstance().player.sendMessage(message, false);
@@ -174,7 +159,6 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
             return;
         }
         lastMessage = message;
-        LOGGER.info("[RPE] {}", message);
 
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player == null) {

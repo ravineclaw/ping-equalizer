@@ -26,53 +26,44 @@ import java.util.stream.Stream;
 
 public class CryptoUtils {
     public static byte[] calculateModHash() {
-        // calculate the hash of the current mod based on it's path and contents
         try {
-            // find location of this class's code source (jar file or classes directory)
             ProtectionDomain pd = CryptoUtils.class.getProtectionDomain();
             if (pd == null || pd.getCodeSource() == null || pd.getCodeSource().getLocation() == null) {
-                throw new IllegalStateException("Unable to determine code source location for mod");
+                throw new IllegalStateException();
             }
 
             Path codePath = Paths.get(pd.getCodeSource().getLocation().toURI()).toAbsolutePath();
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
 
             if (Files.isRegularFile(codePath)) {
-                // If running from a jar, hash the jar bytes
                 try (InputStream in = Files.newInputStream(codePath); DigestInputStream din = new DigestInputStream(in, digest)) {
                     byte[] buffer = new byte[8192];
-                    while (din.read(buffer) != -1) {
-                        // reading through DigestInputStream updates the digest
-                    }
+                    while (din.read(buffer) != -1) {}
                 }
             } else if (Files.isDirectory(codePath)) {
-                // If running from classes directory (dev), walk files in deterministic order
                 try (Stream<Path> stream = Files.walk(codePath)) {
                     stream.filter(Files::isRegularFile)
                           .sorted(Comparator.comparing(Path::toString))
                           .forEach(p -> {
-                              // include the relative path bytes so structure affects the hash
                               Path rel = codePath.relativize(p);
                               byte[] pathBytes = rel.toString().replace('\\', '/').getBytes(java.nio.charset.StandardCharsets.UTF_8);
                               digest.update(pathBytes);
                               digest.update((byte)0);
                               try (InputStream in = Files.newInputStream(p); DigestInputStream din = new DigestInputStream(in, digest)) {
                                   byte[] buf = new byte[8192];
-                                  while (din.read(buf) != -1) {
-                                      // digest updated by DigestInputStream
-                                  }
+                                  while (din.read(buf) != -1) {}
                               } catch (IOException e) {
-                                  throw new RuntimeException("Failed to read file while hashing: " + p, e);
+                                  throw new RuntimeException(e);
                               }
                           });
                 }
             } else {
-                throw new IllegalStateException("Code source path is neither a file nor a directory: " + codePath);
+                throw new IllegalStateException();
             }
 
             return digest.digest();
         } catch (URISyntaxException | NoSuchAlgorithmException | IOException e) {
-            throw new RuntimeException("Failed to calculate mod hash", e);
+            throw new RuntimeException(e);
         }
     }
 
@@ -88,20 +79,18 @@ public class CryptoUtils {
         try {
             try {
                 PrivateKey pk = parsePrivateKeyFromPEM(privateKeyPemOrString);
-                // sign and return raw signature bytes
                 Signature sig = Signature.getInstance("SHA256withRSA");
                 sig.initSign(pk);
                 sig.update(payload);
                 return sig.sign();
             } catch (Exception ex) {
-                // fallback to deterministic digest used previously (dev fallback)
                 MessageDigest digest = MessageDigest.getInstance("SHA-256");
                 digest.update(privateKeyPemOrString.getBytes(java.nio.charset.StandardCharsets.UTF_8));
                 digest.update(payload);
                 return digest.digest();
             }
         } catch (NoSuchAlgorithmException e) {
-            throw new RuntimeException("Failed to sign payload", e);
+            throw new RuntimeException(e);
         }
     }
 
@@ -113,7 +102,7 @@ public class CryptoUtils {
             byte[] signature = sig.sign();
             return Base64.getEncoder().encodeToString(signature);
         } catch (Exception e) {
-            throw new RuntimeException("Failed to sign payload with private key", e);
+            throw new RuntimeException(e);
         }
     }
 
@@ -123,7 +112,7 @@ public class CryptoUtils {
             kpg.initialize(2048, new SecureRandom());
             return kpg.generateKeyPair();
         } catch (NoSuchAlgorithmException e) {
-            throw new RuntimeException("Failed to generate session key pair", e);
+            throw new RuntimeException(e);
         }
     }
 
@@ -132,9 +121,6 @@ public class CryptoUtils {
         return bytesToHex(hash);
     }
 
-    /**
-     * Parse a PKCS#8 PEM-formatted private key (or raw base64 PKCS#8) into a PrivateKey.
-     */
     public static PrivateKey parsePrivateKeyFromPEM(String pem) throws GeneralSecurityException {
         String normalized = pem.trim();
         if (normalized.contains("-----BEGIN")) {
@@ -148,9 +134,6 @@ public class CryptoUtils {
         return kf.generatePrivate(spec);
     }
 
-    /**
-     * Serialize a public key to PEM (-----BEGIN PUBLIC KEY----- ...).
-     */
     public static String serializePublicKey(PublicKey pub) {
         byte[] encoded = pub.getEncoded();
         String b64 = Base64.getEncoder().encodeToString(encoded);
@@ -166,16 +149,11 @@ public class CryptoUtils {
         return sb.toString();
     }
 
-    /**
-     * Attempt to load the embedded private key from `PrivateKey.getPrivateKey()`.
-     * Returns null if the embedded string cannot be parsed as a PKCS#8 PEM.
-     */
     public static PrivateKey getEmbeddedPrivateKey() {
-        String pem = net.ravenclaw.ravenclawspingequalizer.cryptography.PrivateKey.getPrivateKey();
+        String pem = ModPrivateKey.getPrivateKey();
         try {
             return parsePrivateKeyFromPEM(pem);
         } catch (Exception e) {
-            // Not a valid PEM/PKCS8 — return null so callers can handle dev fallback
             return null;
         }
     }
@@ -187,7 +165,7 @@ public class CryptoUtils {
             sig.update(payload);
             return sig.verify(signatureBytes);
         } catch (Exception e) {
-            throw new RuntimeException("Failed to verify signature", e);
+            throw new RuntimeException(e);
         }
     }
 
@@ -206,13 +184,12 @@ public class CryptoUtils {
 
     public static boolean verifyServerSignature(String data, String signatureBase64) {
         try {
-            PublicKey serverKey = parsePublicKeyFromPEM(ServerKey.PUBLIC_KEY);
+            PublicKey serverKey = parsePublicKeyFromPEM(ServerKey.getPublicKey());
             Signature sig = Signature.getInstance("SHA256withRSA");
             sig.initVerify(serverKey);
             sig.update(data.getBytes(java.nio.charset.StandardCharsets.UTF_8));
             return sig.verify(Base64.getDecoder().decode(signatureBase64));
         } catch (Exception e) {
-            e.printStackTrace();
             return false;
         }
     }

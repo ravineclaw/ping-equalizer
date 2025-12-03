@@ -1,6 +1,10 @@
 package net.ravenclaw.ravenclawspingequalizer.cryptography;
 
+import net.ravenclaw.ravenclawspingequalizer.obfuscation.S;
+
 public class ServerKey {
-    // Public Key of the Server to verify signatures
-    public static final String PUBLIC_KEY = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzs1NlL2kEaPA+FLP3bVURzaLezsho6jb2k83FsuIlIldaeU2ccjsCThoNIToMIReZW9/kjGiE0QChst0mVOFGEnpCWEROh2m9r/UML7epd6MO5L9+H7YqdpOthOoJbEJqeFHLvrOJDhyHs4b5+sL0yPxve2wXVABmE63lQFeylI2WgwOAvyoHP2GshCfcYMIZsgVPTX5bEk4UAVnNl0GAylOJVIfaKG903wsd6U4qVD2MPk8WaMtsUMObeqq8imMMGy3xOc9irTrcUDmHV0D/fxKXD8H19MLk/A32j3RZ4menXsEQRN95eRcITZ4eIkPJvpjmbCFNeVlKOZ3dJSJAQIDAQAB";
+    // Public Key of the Server to verify signatures - retrieved from encrypted storage
+    public static String getPublicKey() {
+        return S.PUB_KEY();
+    }
 }

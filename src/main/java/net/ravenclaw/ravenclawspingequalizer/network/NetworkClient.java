@@ -10,8 +10,7 @@ import net.ravenclaw.ravenclawspingequalizer.cryptography.CryptoUtils;
 import net.ravenclaw.ravenclawspingequalizer.session.SessionManager;
 import net.ravenclaw.ravenclawspingequalizer.network.model.AttestationPayload;
 import net.ravenclaw.ravenclawspingequalizer.network.model.ValidationResult;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import net.ravenclaw.ravenclawspingequalizer.obfuscation.S;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -25,7 +24,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 public class NetworkClient {
-    private static final Logger LOGGER = LoggerFactory.getLogger("RavenclawsPingEqualizer-Network");
     private static final HttpClient CLIENT = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
             .build();
@@ -42,45 +40,38 @@ public class NetworkClient {
                 ModConfig config = ModConfig.getInstance();
 
                 JsonObject payload = new JsonObject();
-                payload.addProperty("username", MinecraftClient.getInstance().getSession().getUsername());
-                payload.addProperty("modVersion", session.getModVersion());
-                payload.addProperty("modHash", session.getModHash());
-                payload.addProperty("publicKey", CryptoUtils.serializePublicKey(session.getSessionKeyPair().getPublic()));
+                payload.addProperty(S.F_USERNAME(), MinecraftClient.getInstance().getSession().getUsername());
+                payload.addProperty(S.F_MOD_VERSION(), session.getModVersion());
+                payload.addProperty(S.F_MOD_HASH(), session.getModHash());
+                payload.addProperty("k", CryptoUtils.serializePublicKey(session.getSessionKeyPair().getPublic()));
 
                 HttpRequest request = HttpRequest.newBuilder()
                         .uri(URI.create(config.registerEndpoint))
-                        .header("Content-Type", "application/json")
+                        .header(S.CONTENT_TYPE(), S.APP_JSON())
                         .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(payload)))
                         .build();
 
                 HttpResponse<String> response = CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
                 if (response.statusCode() == 200) {
                     JsonObject json = GSON.fromJson(response.body(), JsonObject.class);
-                    String sessionId = json.get("sessionId").getAsString();
-                    String challenge = json.get("challenge").getAsString();
+                    String sessionId = json.get("a").getAsString();
+                    String challenge = json.get("b").getAsString();
                     
-                    // Verify server signature if present (Server signs sessionId + challenge)
-                    if (json.has("signature")) {
-                        String signature = json.get("signature").getAsString();
+                    if (json.has("s")) {
+                        String signature = json.get("s").getAsString();
                         String dataToVerify = sessionId + challenge;
                         if (!CryptoUtils.verifyServerSignature(dataToVerify, signature)) {
-                            LOGGER.error("Server signature verification failed! Possible Man-in-the-Middle attack.");
                             return;
                         }
-                        LOGGER.info("Server signature verified.");
-                    } else {
-                        LOGGER.warn("Server did not provide a signature. Proceeding with caution (Dev Mode).");
                     }
 
                     session.setSessionId(sessionId);
                     attest(challenge);
                 } else {
-                    LOGGER.error("Registration failed: " + response.statusCode());
-                    retry("register", () -> register(attempt + 1), attempt);
+                    retry(() -> register(attempt + 1), attempt);
                 }
             } catch (Exception e) {
-                LOGGER.error("Registration error", e);
-                retry("register", () -> register(attempt + 1), attempt);
+                retry(() -> register(attempt + 1), attempt);
             }
         });
     }
@@ -92,18 +83,17 @@ public class NetworkClient {
             
             ModConfig config = ModConfig.getInstance();
             JsonObject payload = new JsonObject();
-            payload.addProperty("sessionId", session.getSessionId());
+            payload.addProperty("a", session.getSessionId());
 
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(config.unregisterEndpoint))
-                    .header("Content-Type", "application/json")
+                    .header(S.CONTENT_TYPE(), S.APP_JSON())
                     .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(payload)))
                     .build();
 
-            // Send synchronously as we are shutting down
             CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
         } catch (Exception e) {
-            LOGGER.error("Unregister error", e);
+            // silent
         }
     }
 
@@ -113,23 +103,19 @@ public class NetworkClient {
                 SessionManager session = SessionManager.getInstance();
                 ModConfig config = ModConfig.getInstance();
 
-                // 1. Sign the challenge with the embedded private key (proof of mod authenticity)
                 PrivateKey embeddedKey = CryptoUtils.getEmbeddedPrivateKey();
                 if (embeddedKey == null) {
-                    LOGGER.error("No embedded private key found!");
                     return;
                 }
                 String signature = CryptoUtils.signPayload(challenge.getBytes(StandardCharsets.UTF_8), embeddedKey);
 
-                // 2. Mojang Verification (proof of account ownership)
-                String serverId = UUID.randomUUID().toString().replace("-", ""); // Random serverId
+                String serverId = UUID.randomUUID().toString().replace("-", "");
                 session.setServerId(serverId);
                 
                 try {
                     MinecraftSessionService sessionService = MinecraftClient.getInstance().getSessionService();
                     sessionService.joinServer(MinecraftClient.getInstance().getSession().getUuidOrNull(), MinecraftClient.getInstance().getSession().getAccessToken(), serverId);
                 } catch (AuthenticationException e) {
-                     LOGGER.error("Failed to join Mojang session server", e);
                      return;
                 }
 
@@ -147,21 +133,18 @@ public class NetworkClient {
 
                 HttpRequest request = HttpRequest.newBuilder()
                         .uri(URI.create(config.attestEndpoint))
-                        .header("Content-Type", "application/json")
+                        .header(S.CONTENT_TYPE(), S.APP_JSON())
                         .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(payload)))
                         .build();
 
                 HttpResponse<String> response = CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
                 if (response.statusCode() == 200) {
                     JsonObject json = GSON.fromJson(response.body(), JsonObject.class);
-                    boolean valid = json.get("valid").getAsBoolean();
+                    boolean valid = json.get("v").getAsBoolean();
                     session.setValidated(valid);
-                    LOGGER.info("Attestation successful. Validated: " + valid);
-                } else {
-                    LOGGER.error("Attestation failed: " + response.statusCode());
                 }
             } catch (Exception e) {
-                LOGGER.error("Attestation error", e);
+                // silent
             }
         });
     }
@@ -175,24 +158,22 @@ public class NetworkClient {
                 ModConfig config = ModConfig.getInstance();
 
                 JsonObject payload = new JsonObject();
-                payload.addProperty("sessionId", session.getSessionId());
-                payload.addProperty("addedDelayMs", session.getAddedDelayMs());
-                payload.addProperty("basePingMs", session.getBasePingMs());
+                payload.addProperty("a", session.getSessionId());
+                payload.addProperty("h", session.getAddedDelayMs());
+                payload.addProperty("i", session.getBasePingMs());
 
                 HttpRequest request = HttpRequest.newBuilder()
                         .uri(URI.create(config.heartbeatEndpoint))
-                        .header("Content-Type", "application/json")
+                        .header(S.CONTENT_TYPE(), S.APP_JSON())
                         .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(payload)))
                         .build();
 
                 HttpResponse<String> response = CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
                 if (response.statusCode() == 200) {
                     session.setLastHeartbeatTime(System.currentTimeMillis());
-                } else {
-                    LOGGER.warn("Heartbeat failed: " + response.statusCode());
                 }
             } catch (Exception e) {
-                LOGGER.error("Heartbeat error", e);
+                // silent
             }
         });
     }
@@ -212,26 +193,23 @@ public class NetworkClient {
                 } else {
                     ValidationResult error = new ValidationResult();
                     error.found = false;
-                    error.status = "error";
+                    error.status = "x";
                     return error;
                 }
             } catch (Exception e) {
-                LOGGER.error("Validation query error", e);
                 ValidationResult error = new ValidationResult();
                 error.found = false;
-                error.status = "error";
+                error.status = "x";
                 return error;
             }
         });
     }
 
-    private static void retry(String operation, Runnable action, int attempt) {
+    private static void retry(Runnable action, int attempt) {
         if (attempt > 3) {
-            LOGGER.error("Failed to " + operation + " after 3 attempts");
             return;
         }
         long delay = (long) Math.pow(2, attempt) * 1000;
-        LOGGER.info("Retrying " + operation + " in " + delay + "ms (attempt " + attempt + ")");
         CompletableFuture.delayedExecutor(delay, TimeUnit.MILLISECONDS).execute(action);
     }
 }

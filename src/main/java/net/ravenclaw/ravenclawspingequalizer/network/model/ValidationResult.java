@@ -3,20 +3,20 @@ package net.ravenclaw.ravenclawspingequalizer.network.model;
 import com.google.gson.annotations.SerializedName;
 
 public class ValidationResult {
-    @SerializedName("found")
+    @SerializedName("a")
     public boolean found;
-    @SerializedName("status")
-    public String status; // "validated", "pending", "rejected", "none"
-    @SerializedName("playerUsername")
+    @SerializedName("b")
+    public String status;
+    @SerializedName("c")
     public String playerUsername;
-    @SerializedName("modVersion")
+    @SerializedName("d")
     public String modVersion;
-    @SerializedName("addedDelayMs")
+    @SerializedName("e")
     public long addedDelayMs;
-    @SerializedName("basePingMs")
+    @SerializedName("f")
     public long basePingMs;
-    @SerializedName("lastValidated")
-    public long lastValidated; // timestamp
+    @SerializedName("g")
+    public long lastValidated;
 
     public ValidationResult() {}
 

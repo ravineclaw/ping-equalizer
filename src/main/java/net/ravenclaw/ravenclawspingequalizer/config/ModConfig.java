@@ -14,17 +14,17 @@ public class ModConfig {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static ModConfig instance;
 
-    @SerializedName("registerEndpoint")
+    @SerializedName("a")
     public String registerEndpoint = "https://api.ravenclaw.net/api/register";
-    @SerializedName("unregisterEndpoint")
+    @SerializedName("b")
     public String unregisterEndpoint = "https://api.ravenclaw.net/api/unregister";
-    @SerializedName("attestEndpoint")
+    @SerializedName("c")
     public String attestEndpoint = "https://api.ravenclaw.net/api/attest";
-    @SerializedName("heartbeatEndpoint")
+    @SerializedName("d")
     public String heartbeatEndpoint = "https://api.ravenclaw.net/api/heartbeat";
-    @SerializedName("validateEndpoint")
+    @SerializedName("e")
     public String validateEndpoint = "https://api.ravenclaw.net/api/validate";
-    @SerializedName("mojangSessionServer")
+    @SerializedName("f")
     public String mojangSessionServer = "https://sessionserver.mojang.com/session/minecraft/hasJoined";
 
     public static ModConfig getInstance() {
@@ -40,7 +40,6 @@ public class ModConfig {
                 String json = Files.readString(CONFIG_PATH);
                 instance = GSON.fromJson(json, ModConfig.class);
             } catch (IOException e) {
-                e.printStackTrace();
                 instance = new ModConfig();
             }
         } else {
@@ -54,7 +53,7 @@ public class ModConfig {
             String json = GSON.toJson(instance);
             Files.writeString(CONFIG_PATH, json);
         } catch (IOException e) {
-            e.printStackTrace();
+            // silently fail
         }
     }
 }
