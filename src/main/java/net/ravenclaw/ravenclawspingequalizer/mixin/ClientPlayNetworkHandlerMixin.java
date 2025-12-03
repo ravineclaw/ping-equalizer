@@ -18,11 +18,11 @@ public abstract class ClientPlayNetworkHandlerMixin {
     public abstract ClientConnection getConnection();
 
     @Inject(method = "onGameJoin", at = @At("TAIL"))
-    private void rpe$onGameJoin(GameJoinS2CPacket packet, CallbackInfo ci) {
+    private void pingEqualizer$onGameJoin(GameJoinS2CPacket packet, CallbackInfo ci) {
         PingEqualizerState.getInstance().prepareForNewPlaySession();
         ClientConnection connection = this.getConnection();
         if (connection instanceof PingEqualizerConnectionBridge bridge) {
-            bridge.rpe$signalPlayPhaseEntry();
+            bridge.pingEqualizer$signalPlayPhaseEntry();
         }
     }
 }

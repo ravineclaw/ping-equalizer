@@ -49,9 +49,9 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
     @Unique
     private final AtomicBoolean processingReceiveQueue = new AtomicBoolean(false);
     @Unique
-    private volatile boolean rpe$suppressDelays = false;
+    private volatile boolean pingEqualizer$suppressDelays = false;
     @Unique
-    private ChannelHandlerContext rpe$lastReceiveContext;
+    private ChannelHandlerContext pingEqualizer$lastReceiveContext;
     @Unique
     private static final long PRECISION_WINDOW_NANOS = TimeUnit.MILLISECONDS.toNanos(2);
     @Unique
@@ -60,36 +60,36 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
     private static final CustomPayload.Id<?> PLAYER_LOADED_PAYLOAD_ID = CustomPayload.id("player_loaded");
 
     @Inject(method = "send(Lnet/minecraft/network/packet/Packet;)V", at = @At("HEAD"), cancellable = true, require = 0)
-    private void rpe$onSendSimple(Packet<?> packet, CallbackInfo ci) {
+    private void pingEqualizer$onSend(Packet<?> packet, CallbackInfo ci) {
         if (packet instanceof QueryPingC2SPacket qp) {
             PingEqualizerState.getInstance().onPingSent(qp.getStartTime());
         }
-        if (rpe$handleSend(packet, () -> self().send(packet))) {
+        if (pingEqualizer$handleSend(packet, () -> self().send(packet))) {
             ci.cancel();
         }
     }
 
     @Inject(method = "send(Lnet/minecraft/network/packet/Packet;Lnet/minecraft/network/PacketCallbacks;)V", at = @At("HEAD"), cancellable = true, require = 0)
-    private void rpe$onSendWithCallbacks(Packet<?> packet, PacketCallbacks callbacks, CallbackInfo ci) {
-        if (rpe$handleSend(packet, () -> self().send(packet, callbacks))) {
+    private void pingEqualizer$onSendWithCallbacks(Packet<?> packet, PacketCallbacks callbacks, CallbackInfo ci) {
+        if (pingEqualizer$handleSend(packet, () -> self().send(packet, callbacks))) {
             ci.cancel();
         }
     }
 
     @Inject(method = "send(Lnet/minecraft/network/packet/Packet;Lnet/minecraft/network/PacketCallbacks;Z)V", at = @At("HEAD"), cancellable = true, require = 0)
-    private void rpe$onSendWithCallbacksAndFlush(Packet<?> packet, PacketCallbacks callbacks, boolean flush, CallbackInfo ci) {
-        if (rpe$handleSend(packet, () -> self().send(packet, callbacks, flush))) {
+    private void pingEqualizer$onSendWithCallbacksAndFlush(Packet<?> packet, PacketCallbacks callbacks, boolean flush, CallbackInfo ci) {
+        if (pingEqualizer$handleSend(packet, () -> self().send(packet, callbacks, flush))) {
             ci.cancel();
         }
     }
 
-    private boolean rpe$handleSend(Packet<?> packet, Runnable sendAction) {
-        if (isDelayedSend.get() || rpe$suppressDelays) {
+    private boolean pingEqualizer$handleSend(Packet<?> packet, Runnable sendAction) {
+        if (isDelayedSend.get() || pingEqualizer$suppressDelays) {
             return false;
         }
 
         PingEqualizerState state = PingEqualizerState.getInstance();
-        boolean shouldBypass = rpe$shouldBypass(packet);
+        boolean shouldBypass = pingEqualizer$shouldBypass(packet);
 
         if (shouldBypass && sendQueue.isEmpty()) {
             return false;
@@ -119,11 +119,11 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
         if (packet instanceof QueryPingC2SPacket qp) {
             PingEqualizerState.getInstance().recordPingOutboundDelay(qp.getStartTime(), delay);
         }
-        rpe$processSendQueue();
+        pingEqualizer$processSendQueue();
         return true;
     }
 
-    private void rpe$processSendQueue() {
+    private void pingEqualizer$processSendQueue() {
         if (!processingSendQueue.compareAndSet(false, true)) {
             return;
         }
@@ -134,13 +134,13 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
         }
 
         if (channel.eventLoop().inEventLoop()) {
-            rpe$drainSendQueue();
+            pingEqualizer$drainSendQueue();
         } else {
-            channel.eventLoop().execute(this::rpe$drainSendQueue);
+            channel.eventLoop().execute(this::pingEqualizer$drainSendQueue);
         }
     }
 
-    private void rpe$drainSendQueue() {
+    private void pingEqualizer$drainSendQueue() {
         try {
             while (true) {
                 DelayedPacketTask task = sendQueue.peek();
@@ -173,12 +173,12 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
                 }
 
                 if (delayNanos <= PRECISION_WINDOW_NANOS) {
-                    rpe$spinWait(delayNanos);
+                    pingEqualizer$spinWait(delayNanos);
                     continue;
                 }
 
                 long waitNanos = Math.max(delayNanos - PRECISION_WINDOW_NANOS, MIN_RESCHEDULE_NANOS);
-                channel.eventLoop().schedule(this::rpe$processSendQueue, waitNanos, TimeUnit.NANOSECONDS);
+                channel.eventLoop().schedule(this::pingEqualizer$processSendQueue, waitNanos, TimeUnit.NANOSECONDS);
                 processingSendQueue.set(false);
                 return;
             }
@@ -189,7 +189,7 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
     }
 
     @Inject(method = "disconnect", at = @At("HEAD"))
-    private void rpe$onDisconnect(Text reason, CallbackInfo ci) {
+    private void pingEqualizer$onDisconnect(Text reason, CallbackInfo ci) {
         PingEqualizerState.getInstance().setOff();
     }
 
@@ -197,14 +197,14 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
     protected abstract void channelRead0(ChannelHandlerContext ctx, Packet<?> msg);
 
     @Inject(method = "channelRead0(Lio/netty/channel/ChannelHandlerContext;Lnet/minecraft/network/packet/Packet;)V", at = @At("HEAD"), cancellable = true)
-    private void rpe$onChannelRead(ChannelHandlerContext context, Packet<?> packet, CallbackInfo ci) {
-        rpe$lastReceiveContext = context;
-        if (isDelayedReceive.get() || rpe$suppressDelays) {
+    private void pingEqualizer$onChannelRead(ChannelHandlerContext context, Packet<?> packet, CallbackInfo ci) {
+        pingEqualizer$lastReceiveContext = context;
+        if (isDelayedReceive.get() || pingEqualizer$suppressDelays) {
             return;
         }
 
         PingEqualizerState state = PingEqualizerState.getInstance();
-        boolean shouldBypass = rpe$shouldBypass(packet);
+        boolean shouldBypass = pingEqualizer$shouldBypass(packet);
 
         if (shouldBypass && receiveQueue.isEmpty()) {
             return;
@@ -234,10 +234,10 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
             PingEqualizerState.getInstance().recordPingInboundDelay(ping.startTime(), delay);
         }
         receiveQueue.offer(new DelayedPacketTask(packet, null, deliverTime));
-        rpe$processReceiveQueue(context);
+        pingEqualizer$processReceiveQueue(context);
     }
 
-    private void rpe$processReceiveQueue(ChannelHandlerContext context) {
+    private void pingEqualizer$processReceiveQueue(ChannelHandlerContext context) {
         if (!processingReceiveQueue.compareAndSet(false, true)) {
             return;
         }
@@ -247,7 +247,7 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
             return;
         }
 
-        Runnable runner = () -> rpe$drainReceiveQueue(context);
+        Runnable runner = () -> pingEqualizer$drainReceiveQueue(context);
         if (context.executor().inEventLoop()) {
             runner.run();
         } else {
@@ -255,7 +255,7 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
         }
     }
 
-    private void rpe$drainReceiveQueue(ChannelHandlerContext context) {
+    private void pingEqualizer$drainReceiveQueue(ChannelHandlerContext context) {
         try {
             while (true) {
                 DelayedPacketTask task = receiveQueue.peek();
@@ -283,7 +283,7 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
                 } else {
                     context.executor().schedule(() -> {
                         processingReceiveQueue.set(false);
-                        rpe$processReceiveQueue(context);
+                        pingEqualizer$processReceiveQueue(context);
                     }, delayNanos, TimeUnit.NANOSECONDS);
                     return;
                 }
@@ -294,7 +294,7 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
         }
     }
 
-    private static void rpe$spinWait(long nanos) {
+    private static void pingEqualizer$spinWait(long nanos) {
         long deadline = System.nanoTime() + nanos;
         while (true) {
             long remaining = deadline - System.nanoTime();
@@ -308,7 +308,7 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
         }
     }
 
-    private static boolean rpe$shouldBypass(Packet<?> packet) {
+    private static boolean pingEqualizer$shouldBypass(Packet<?> packet) {
         if (packet.transitionsNetworkState()) {
             return true;
         }
@@ -319,10 +319,10 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
             payload = s2c.payload();
         }
         
-        return rpe$isPlayerLoadedPayload(payload);
+        return pingEqualizer$isPlayerLoadedPayload(payload);
     }
 
-    private static boolean rpe$isPlayerLoadedPayload(CustomPayload payload) {
+    private static boolean pingEqualizer$isPlayerLoadedPayload(CustomPayload payload) {
         return payload != null && payload.getId().equals(PLAYER_LOADED_PAYLOAD_ID);
     }
 
@@ -331,39 +331,39 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
     }
 
     @Inject(method = "transitionInbound", at = @At("HEAD"))
-    private void rpe$onTransitionInbound(NetworkState<?> state, PacketListener listener, CallbackInfo ci) {
-        rpe$handlePhaseTransition(state.id());
+    private void pingEqualizer$onTransitionInbound(NetworkState<?> state, PacketListener listener, CallbackInfo ci) {
+        pingEqualizer$handlePhaseTransition(state.id());
     }
 
     @Inject(method = "transitionOutbound", at = @At("HEAD"))
-    private void rpe$onTransitionOutbound(NetworkState<?> state, CallbackInfo ci) {
-        rpe$handlePhaseTransition(state.id());
+    private void pingEqualizer$onTransitionOutbound(NetworkState<?> state, CallbackInfo ci) {
+        pingEqualizer$handlePhaseTransition(state.id());
     }
 
     @Unique
-    private void rpe$handlePhaseTransition(NetworkPhase phase) {
+    private void pingEqualizer$handlePhaseTransition(NetworkPhase phase) {
         boolean playPhase = phase == NetworkPhase.PLAY;
-        rpe$suppressDelays = !playPhase;
+        pingEqualizer$suppressDelays = !playPhase;
         if (!playPhase) {
-            rpe$flushQueuesNow();
+            pingEqualizer$flushQueuesNow();
             PingEqualizerState.getInstance().suspendForProtocolChange();
         }
     }
 
     @Override
-    public void rpe$signalPlayPhaseEntry() {
-        rpe$suppressDelays = false;
+    public void pingEqualizer$signalPlayPhaseEntry() {
+        pingEqualizer$suppressDelays = false;
         PingEqualizerState.getInstance().prepareForNewPlaySession();
     }
 
     @Unique
-    private void rpe$flushQueuesNow() {
-        rpe$flushSendQueueNow();
-        rpe$flushReceiveQueueNow();
+    private void pingEqualizer$flushQueuesNow() {
+        pingEqualizer$flushSendQueueNow();
+        pingEqualizer$flushReceiveQueueNow();
     }
 
     @Unique
-    private void rpe$flushSendQueueNow() {
+    private void pingEqualizer$flushSendQueueNow() {
         if (channel == null || channel.eventLoop() == null) {
             sendQueue.clear();
             processingSendQueue.set(false);
@@ -383,8 +383,8 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
     }
 
     @Unique
-    private void rpe$flushReceiveQueueNow() {
-        ChannelHandlerContext context = rpe$lastReceiveContext;
+    private void pingEqualizer$flushReceiveQueueNow() {
+        ChannelHandlerContext context = pingEqualizer$lastReceiveContext;
         if (context == null || context.executor() == null) {
             receiveQueue.clear();
             processingReceiveQueue.set(false);

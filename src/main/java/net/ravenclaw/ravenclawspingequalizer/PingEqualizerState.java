@@ -60,7 +60,7 @@ public class PingEqualizerState {
         currentMode = Mode.OFF;
         currentDelayMs = 0;
         preciseDelay = 0;
-        rpe$resetMeasurementState();
+        resetMeasurementState();
         resetMatchSmoother();
     }
 
@@ -85,12 +85,12 @@ public class PingEqualizerState {
     }
 
     public void suspendForProtocolChange() {
-        rpe$resetMeasurementState();
+        resetMeasurementState();
         resetMatchSmoother();
     }
 
     public void prepareForNewPlaySession() {
-        rpe$resetMeasurementState();
+        resetMeasurementState();
         resetMatchSmoother();
         if (currentMode == Mode.ADD) {
             currentDelayMs = addAmount;
@@ -275,7 +275,7 @@ public class PingEqualizerState {
     }
 
     public long getInboundDelayPortion() {
-        return currentDelayMs / 2;
+        return currentDelayMs - getOutboundDelayPortion();
     }
 
     private int computeMatchTarget(ClientPlayNetworkHandler handler) {
@@ -334,7 +334,7 @@ public class PingEqualizerState {
         }
     }
 
-    private void rpe$resetMeasurementState() {
+    private void resetMeasurementState() {
         pendingPings.clear();
         awaitingBasePing = false;
         lastPingRequestTime = 0;
