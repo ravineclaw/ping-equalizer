@@ -15,15 +15,15 @@ public class ModConfig {
     private static ModConfig instance;
 
     @SerializedName("a")
-    public String registerEndpoint = "https://api.ravenclaw.net/api/register";
+    public String registerEndpoint = "http://localhost:8080/api/register";
     @SerializedName("b")
-    public String unregisterEndpoint = "https://api.ravenclaw.net/api/unregister";
+    public String unregisterEndpoint = "http://localhost:8080/api/unregister";
     @SerializedName("c")
-    public String attestEndpoint = "https://api.ravenclaw.net/api/attest";
+    public String attestEndpoint = "http://localhost:8080/api/attest";
     @SerializedName("d")
-    public String heartbeatEndpoint = "https://api.ravenclaw.net/api/heartbeat";
+    public String heartbeatEndpoint = "http://localhost:8080/api/heartbeat";
     @SerializedName("e")
-    public String validateEndpoint = "https://api.ravenclaw.net/api/validate";
+    public String validateEndpoint = "http://localhost:8080/api/validate";
     @SerializedName("f")
     public String mojangSessionServer = "https://sessionserver.mojang.com/session/minecraft/hasJoined";
 

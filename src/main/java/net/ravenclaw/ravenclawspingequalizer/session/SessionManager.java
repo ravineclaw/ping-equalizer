@@ -99,4 +99,13 @@ public class SessionManager {
     public void setBasePingMs(long basePingMs) {
         this.basePingMs = basePingMs;
     }
+
+    public void reset() {
+        this.sessionId = null;
+        this.sessionKeyPair = null;
+        this.isValidated = false;
+        this.lastHeartbeatTime = 0;
+        this.serverId = null;
+        // Keep modVersion and modHash as they don't change
+    }
 }

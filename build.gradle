@@ -224,3 +224,31 @@ task buildObfuscated {
 clean.doFirst {
     delete "build/generated/sources/strings"
 }
+
+// ============================================================================
+// CRYPTO TEST TASKS
+// ============================================================================
+
+task runTestServer(type: JavaExec) {
+    description = 'Run the crypto test server'
+    group = 'verification'
+    
+    classpath = sourceSets.test.runtimeClasspath + sourceSets.main.runtimeClasspath
+    mainClass = 'net.ravenclaw.ravenclawspingequalizer.cryptography.CryptoTestServer'
+    
+    standardInput = System.in
+    
+    dependsOn testClasses
+}
+
+task runTestClient(type: JavaExec) {
+    description = 'Run the crypto test client'
+    group = 'verification'
+    
+    classpath = sourceSets.test.runtimeClasspath + sourceSets.main.runtimeClasspath
+    mainClass = 'net.ravenclaw.ravenclawspingequalizer.cryptography.CryptoTestClient'
+    
+    standardInput = System.in
+    
+    dependsOn testClasses
+}

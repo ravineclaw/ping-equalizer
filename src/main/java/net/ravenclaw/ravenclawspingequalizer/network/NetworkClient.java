@@ -10,7 +10,6 @@ import net.ravenclaw.ravenclawspingequalizer.cryptography.CryptoUtils;
 import net.ravenclaw.ravenclawspingequalizer.session.SessionManager;
 import net.ravenclaw.ravenclawspingequalizer.network.model.AttestationPayload;
 import net.ravenclaw.ravenclawspingequalizer.network.model.ValidationResult;
-import net.ravenclaw.ravenclawspingequalizer.obfuscation.S;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -40,14 +39,22 @@ public class NetworkClient {
                 ModConfig config = ModConfig.getInstance();
 
                 JsonObject payload = new JsonObject();
-                payload.addProperty(S.F_USERNAME(), MinecraftClient.getInstance().getSession().getUsername());
-                payload.addProperty(S.F_MOD_VERSION(), session.getModVersion());
-                payload.addProperty(S.F_MOD_HASH(), session.getModHash());
+                payload.addProperty("username", MinecraftClient.getInstance().getSession().getUsername());
+                payload.addProperty("modVersion", session.getModVersion());
+                payload.addProperty("modHash", session.getModHash());
                 payload.addProperty("k", CryptoUtils.serializePublicKey(session.getSessionKeyPair().getPublic()));
+                // Optional: signature of modHash using embedded private key (if present)
+                try {
+                    java.security.PrivateKey embedded = CryptoUtils.getEmbeddedPrivateKey();
+                    if (embedded != null) {
+                        String mhSig = CryptoUtils.signPayload(session.getModHash().getBytes(java.nio.charset.StandardCharsets.UTF_8), embedded);
+                        payload.addProperty("mhSig", mhSig);
+                    }
+                } catch (Exception ignored) {}
 
                 HttpRequest request = HttpRequest.newBuilder()
                         .uri(URI.create(config.registerEndpoint))
-                        .header(S.CONTENT_TYPE(), S.APP_JSON())
+                        .header("Content-Type", "application/json")
                         .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(payload)))
                         .build();
 
@@ -61,16 +68,20 @@ public class NetworkClient {
                         String signature = json.get("s").getAsString();
                         String dataToVerify = sessionId + challenge;
                         if (!CryptoUtils.verifyServerSignature(dataToVerify, signature)) {
+                            sendLocalMessage("PE: Server signature verification failed!");
                             return;
                         }
                     }
 
                     session.setSessionId(sessionId);
+                    sendLocalMessage("PE: Registered with server. Verifying...");
                     attest(challenge);
                 } else {
+                    sendLocalMessage("PE: Registration failed (HTTP " + response.statusCode() + ")");
                     retry(() -> register(attempt + 1), attempt);
                 }
             } catch (Exception e) {
+                sendLocalMessage("PE: Registration error: " + e.getMessage());
                 retry(() -> register(attempt + 1), attempt);
             }
         });
@@ -87,7 +98,7 @@ public class NetworkClient {
 
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(config.unregisterEndpoint))
-                    .header(S.CONTENT_TYPE(), S.APP_JSON())
+                    .header("Content-Type", "application/json")
                     .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(payload)))
                     .build();
 
@@ -103,11 +114,11 @@ public class NetworkClient {
                 SessionManager session = SessionManager.getInstance();
                 ModConfig config = ModConfig.getInstance();
 
-                PrivateKey embeddedKey = CryptoUtils.getEmbeddedPrivateKey();
-                if (embeddedKey == null) {
-                    return;
-                }
-                String signature = CryptoUtils.signPayload(challenge.getBytes(StandardCharsets.UTF_8), embeddedKey);
+                // Sign with session private key (matching the public key sent in register)
+                String signature = CryptoUtils.signPayload(
+                    challenge.getBytes(StandardCharsets.UTF_8), 
+                    session.getSessionKeyPair().getPrivate()
+                );
 
                 String serverId = UUID.randomUUID().toString().replace("-", "");
                 session.setServerId(serverId);
@@ -133,7 +144,7 @@ public class NetworkClient {
 
                 HttpRequest request = HttpRequest.newBuilder()
                         .uri(URI.create(config.attestEndpoint))
-                        .header(S.CONTENT_TYPE(), S.APP_JSON())
+                        .header("Content-Type", "application/json")
                         .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(payload)))
                         .build();
 
@@ -142,9 +153,16 @@ public class NetworkClient {
                     JsonObject json = GSON.fromJson(response.body(), JsonObject.class);
                     boolean valid = json.get("v").getAsBoolean();
                     session.setValidated(valid);
+                    if (valid) {
+                        sendLocalMessage("PE: Validated successfully!");
+                    } else {
+                        sendLocalMessage("PE: Validation failed (Server rejected).");
+                    }
+                } else {
+                    sendLocalMessage("PE: Validation failed (HTTP " + response.statusCode() + ")");
                 }
             } catch (Exception e) {
-                // silent
+                sendLocalMessage("PE: Validation error: " + e.getMessage());
             }
         });
     }
@@ -164,7 +182,7 @@ public class NetworkClient {
 
                 HttpRequest request = HttpRequest.newBuilder()
                         .uri(URI.create(config.heartbeatEndpoint))
-                        .header(S.CONTENT_TYPE(), S.APP_JSON())
+                        .header("Content-Type", "application/json")
                         .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(payload)))
                         .build();
 
@@ -207,9 +225,19 @@ public class NetworkClient {
 
     private static void retry(Runnable action, int attempt) {
         if (attempt > 3) {
+            sendLocalMessage("PE: Connection failed after 3 attempts.");
             return;
         }
         long delay = (long) Math.pow(2, attempt) * 1000;
         CompletableFuture.delayedExecutor(delay, TimeUnit.MILLISECONDS).execute(action);
+    }
+
+    private static void sendLocalMessage(String message) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        client.execute(() -> {
+            if (client.player != null) {
+                client.player.sendMessage(net.minecraft.text.Text.literal(message), false);
+            }
+        });
     }
 }

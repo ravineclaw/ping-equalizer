@@ -45,9 +45,6 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
         FabricLoader.getInstance().getModContainer("ravenclawspingequalizer").ifPresent(container -> 
             session.setModVersion(container.getMetadata().getVersion().getFriendlyString())
         );
-        session.setSessionKeyPair(CryptoUtils.generateSessionKeyPair());
-
-        NetworkClient.register();
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             NetworkClient.unregister();
@@ -63,8 +60,17 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
             }
         });
 
-        ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> resetAnnouncementState());
-        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> resetAnnouncementState());
+        ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> {
+            resetAnnouncementState();
+            SessionManager.getInstance().setSessionKeyPair(CryptoUtils.generateSessionKeyPair());
+            NetworkClient.register();
+        });
+        
+        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
+            resetAnnouncementState();
+            NetworkClient.unregister();
+            SessionManager.getInstance().reset();
+        });
 
         ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
             LiteralCommandNode<FabricClientCommandSource> rootNode = dispatcher.register(
@@ -103,6 +109,16 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                         .executes(ctx -> {
                             String status = PingEqualizerState.getInstance().getStatusMessage();
                             sendLocalMessage(status);
+                            
+                            SessionManager sm = SessionManager.getInstance();
+                            String sessionId = sm.getSessionId();
+                            if (sessionId != null) {
+                                String maskedId = sessionId.substring(0, 8) + "...";
+                                String valStatus = sm.isValidated() ? "Validated" : "Pending";
+                                sendLocalMessage("Session: " + maskedId + " (" + valStatus + ")");
+                            } else {
+                                sendLocalMessage("Session: Not connected");
+                            }
                             return 1;
                         })
                     )
@@ -121,10 +137,12 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                                 NetworkClient.validateUser(username).thenAccept(result -> {
                                     Text message;
                                     if (result != null && result.isFound()) {
-                                        String details = String.format(" (v%s, +%dms, b:%dms)", 
+                                        long secondsAgo = (System.currentTimeMillis() - result.getLastValidated()) / 1000;
+                                        String details = String.format(" (v%s, +%dms, b:%dms, last:%ds ago)", 
                                             result.getModVersion(), 
                                             result.getAddedDelayMs(), 
-                                            result.getBasePingMs());
+                                            result.getBasePingMs(),
+                                            secondsAgo);
                                         
                                         if ("VALIDATED".equals(result.getStatus())) {
                                             message = Text.literal("+ " + result.getPlayerUsername() + details).formatted(Formatting.GREEN);
