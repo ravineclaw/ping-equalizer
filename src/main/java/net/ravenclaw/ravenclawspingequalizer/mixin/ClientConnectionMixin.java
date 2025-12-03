@@ -18,11 +18,8 @@ import net.minecraft.network.NetworkPhase;
 import net.minecraft.network.NetworkState;
 import net.minecraft.network.PacketCallbacks;
 import net.minecraft.network.listener.PacketListener;
-import net.minecraft.network.packet.CustomPayload;
 import net.minecraft.network.packet.Packet;
-import net.minecraft.network.packet.c2s.common.CustomPayloadC2SPacket;
 import net.minecraft.network.packet.c2s.query.QueryPingC2SPacket;
-import net.minecraft.network.packet.s2c.common.CustomPayloadS2CPacket;
 import net.minecraft.network.packet.s2c.query.PingResultS2CPacket;
 import net.minecraft.text.Text;
 import net.ravenclaw.ravenclawspingequalizer.PingEqualizerState;
@@ -56,8 +53,6 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
     private static final long PRECISION_WINDOW_NANOS = TimeUnit.MILLISECONDS.toNanos(2);
     @Unique
     private static final long MIN_RESCHEDULE_NANOS = TimeUnit.MILLISECONDS.toNanos(1);
-    @Unique
-    private static final CustomPayload.Id<?> PLAYER_LOADED_PAYLOAD_ID = CustomPayload.id("player_loaded");
 
     @Inject(method = "send(Lnet/minecraft/network/packet/Packet;)V", at = @At("HEAD"), cancellable = true, require = 0)
     private void pingEqualizer$onSend(Packet<?> packet, CallbackInfo ci) {
@@ -309,21 +304,7 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
     }
 
     private static boolean pingEqualizer$shouldBypass(Packet<?> packet) {
-        if (packet.transitionsNetworkState()) {
-            return true;
-        }
-        CustomPayload payload = null;
-        if (packet instanceof CustomPayloadC2SPacket c2s) {
-            payload = c2s.payload();
-        } else if (packet instanceof CustomPayloadS2CPacket s2c) {
-            payload = s2c.payload();
-        }
-        
-        return pingEqualizer$isPlayerLoadedPayload(payload);
-    }
-
-    private static boolean pingEqualizer$isPlayerLoadedPayload(CustomPayload payload) {
-        return payload != null && payload.getId().equals(PLAYER_LOADED_PAYLOAD_ID);
+        return packet.transitionsNetworkState();
     }
 
     private ClientConnection self() {

@@ -37,9 +37,6 @@ public class PingEqualizerState {
     private long lastPingRequestTime = 0;
     private boolean awaitingBasePing = false;
 
-    private int lastObservedPing = 0;
-    private long lastObservedSampleTime = 0;
-
     private double matchSmoothedTarget = -1;
     private long matchTargetLastUpdate = 0;
 
@@ -141,9 +138,6 @@ public class PingEqualizerState {
             : smoothedBasePing * 0.95 + estimatedBase * 0.05;
         lastBasePingSampleTime = now;
         awaitingBasePing = false;
-
-        lastObservedPing = (int) Math.max(0, measuredRtt);
-        lastObservedSampleTime = now;
     }
 
     public void tick(MinecraftClient client) {
@@ -341,7 +335,5 @@ public class PingEqualizerState {
         lastValidBasePing = 0;
         smoothedBasePing = 0;
         lastBasePingSampleTime = 0;
-        lastObservedPing = 0;
-        lastObservedSampleTime = 0;
     }
 }
