@@ -21,7 +21,6 @@ public class PingEqualizerState {
 
     private static final PingEqualizerState INSTANCE = new PingEqualizerState();
 
-    // Timing constants
     private static final long BASE_PING_MAX_AGE_MS = 250;
     private static final long PING_REQUEST_COOLDOWN_MS = 400;
     private static final long MATCH_TARGET_RESET_MS = 5000;
@@ -30,32 +29,23 @@ public class PingEqualizerState {
     private static final int MATCH_TARGET_MAX_STEP_MS = 75;
     private static final double MATCH_TARGET_RATE_MS_PER_SECOND = 25.0;
 
-    // State
     private Mode currentMode = Mode.OFF;
-    private int addAmount = 0;            // For ADD mode (full RTT to add)
-    private int totalTarget = 0;          // Target total RTT for TOTAL mode
-    private String matchPlayerName = ""; // Player name for MATCH mode
+    private int addAmount = 0;
+    private int totalTarget = 0;
+    private String matchPlayerName = "";
 
-    // Current additive delay (full RTT we are adding). Split evenly on send/receive.
     private long currentDelayMs = 0;
     private double preciseDelay = 0;
 
-    // Base ping tracking (attempt to measure underlying RTT excluding our artificial delay)
-    private int lastValidBasePing = 0;        // Last measured base ping (ms)
-    private double smoothedBasePing = 0;      // Smoothed base ping (EMA)
-    private long lastBasePingSampleTime = 0;  // Timestamp of last base ping sample (ms)
-    private long lastPingRequestTime = 0;     // Timestamp of last ping request sent (ms)
-    private boolean awaitingBasePing = false; // Whether we're waiting for a ping response
+    private int lastValidBasePing = 0;
+    private double smoothedBasePing = 0;
+    private long lastBasePingSampleTime = 0;
+    private long lastPingRequestTime = 0;
+    private boolean awaitingBasePing = false;
 
-    // Observed ping preview (base + added delay) used in status
-    private int lastObservedPing = 0;
-    private long lastObservedSampleTime = 0;
-
-    // MATCH mode smoother
     private double matchSmoothedTarget = -1;
     private long matchTargetLastUpdate = 0;
 
-    // Pending ping packets keyed by their startTime (packet timestamp). We store send & arrival times.
     private static final class PendingPing {
         long appliedDelayMs;
         long actualSendTime = -1;
@@ -73,7 +63,7 @@ public class PingEqualizerState {
         currentMode = Mode.OFF;
         currentDelayMs = 0;
         preciseDelay = 0;
-        rpe$resetMeasurementState();
+        resetMeasurementState();
         resetMatchSmoother();
     }
 
@@ -97,21 +87,13 @@ public class PingEqualizerState {
         updateDelay(MinecraftClient.getInstance());
     }
 
-    /**
-     * Called when the connection leaves the play protocol but remains alive (e.g., proxy transfer).
-     * Keeps the selected mode while clearing transient timing state so we can re-measure later.
-     */
     public void suspendForProtocolChange() {
-        rpe$resetMeasurementState();
+        resetMeasurementState();
         resetMatchSmoother();
     }
 
-    /**
-     * Called when a fresh play handler is ready (initial join or after a transfer).
-     * Ensures runtime metrics restart without forcing the player to reconfigure the mod.
-     */
     public void prepareForNewPlaySession() {
-        rpe$resetMeasurementState();
+        resetMeasurementState();
         resetMatchSmoother();
         if (currentMode == Mode.ADD) {
             currentDelayMs = addAmount;
@@ -162,9 +144,6 @@ public class PingEqualizerState {
             : smoothedBasePing * 0.95 + estimatedBase * 0.05;
         lastBasePingSampleTime = now;
         awaitingBasePing = false;
-
-        lastObservedPing = (int) Math.max(0, measuredRtt);
-        lastObservedSampleTime = now;
     }
 
     public void tick(MinecraftClient client) {
@@ -262,7 +241,6 @@ public class PingEqualizerState {
         handler.sendPacket(new QueryPingC2SPacket(now));
     }
 
-    // Delay splitting & status remain same but include target info when available
     public String getStatusMessage() {
         if (currentMode == Mode.OFF) {
             return "Ping Equalizer: OFF";
@@ -299,7 +277,7 @@ public class PingEqualizerState {
     }
 
     public long getInboundDelayPortion() {
-        return currentDelayMs / 2;
+        return currentDelayMs - getOutboundDelayPortion();
     }
 
     private int computeMatchTarget(ClientPlayNetworkHandler handler) {
@@ -358,14 +336,12 @@ public class PingEqualizerState {
         }
     }
 
-    private void rpe$resetMeasurementState() {
+    private void resetMeasurementState() {
         pendingPings.clear();
         awaitingBasePing = false;
         lastPingRequestTime = 0;
         lastValidBasePing = 0;
         smoothedBasePing = 0;
         lastBasePingSampleTime = 0;
-        lastObservedPing = 0;
-        lastObservedSampleTime = 0;
     }
 }

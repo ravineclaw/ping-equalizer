@@ -12,9 +12,6 @@
   "entrypoints": {
     "client": [
       "net.ravenclaw.ravenclawspingequalizer.client.RavenclawsPingEqualizerClient"
-    ],
-    "main": [
-      "net.ravenclaw.ravenclawspingequalizer.RavenclawsPingEqualizer"
     ]
   },
   "mixins": [
