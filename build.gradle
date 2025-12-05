@@ -1,3 +1,5 @@
+import net.ravenclaw.StringObfuscatorPlugin
+
 buildscript {
     repositories {
         mavenCentral()
@@ -23,7 +25,7 @@ stringObfuscation {
     // 2. buildObfuscated task is run
     // 3. buildAggressive task is run
     enabled = project.hasProperty('obfuscateStrings') || gradle.startParameter.taskNames.any { taskName ->
-        taskName == 'buildObfuscated' || taskName == 'buildAggressive' || taskName == 'obfuscateJar'
+        taskName == 'buildObfuscated' || taskName == 'buildAggressive' || taskName == 'buildAgressive' || taskName == 'obfuscateJar'
     }
 }
 
@@ -198,6 +200,13 @@ task obfuscateJar(type: proguard.gradle.ProGuardTask) {
 task buildAggressive {
     dependsOn build
     dependsOn obfuscateJar
+}
+
+// Backwards-compatible alias for the commonly mistyped task name
+tasks.register("buildAgressive") {
+    group = 'build'
+    description = 'Alias for buildAggressive'
+    dependsOn buildAggressive
 }
 
 // ============================================================================
