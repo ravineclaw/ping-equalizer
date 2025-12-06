@@ -6,7 +6,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 import com.mojang.brigadier.arguments.IntegerArgumentType;
-import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.tree.LiteralCommandNode;
 
 import net.fabricmc.api.ClientModInitializer;
@@ -15,18 +14,12 @@ import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallba
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
-import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.network.message.ChatVisibility;
 import net.minecraft.network.packet.c2s.common.ClientOptionsC2SPacket;
 import net.minecraft.network.packet.c2s.common.SyncedClientOptions;
 import net.minecraft.text.Text;
-import net.minecraft.util.Formatting;
 import net.ravenclaw.ravenclawspingequalizer.PingEqualizerState;
-import net.ravenclaw.ravenclawspingequalizer.cryptography.CryptoUtils;
-import net.ravenclaw.ravenclawspingequalizer.network.NetworkClient;
-import net.ravenclaw.ravenclawspingequalizer.network.model.ValidationResult;
-import net.ravenclaw.ravenclawspingequalizer.session.SessionManager;
 
 public class RavenclawsPingEqualizerClient implements ClientModInitializer {
 
@@ -40,36 +33,21 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
 
     @Override
     public void onInitializeClient() {
-        SessionManager session = SessionManager.getInstance();
-        session.setModHash(CryptoUtils.calculateModHashHex());
-        FabricLoader.getInstance().getModContainer("ravenclawspingequalizer").ifPresent(container -> 
-            session.setModVersion(container.getMetadata().getVersion().getFriendlyString())
-        );
-
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            NetworkClient.unregister();
-        }));
-
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             PingEqualizerState.getInstance().tick(client);
             
             tickCounter++;
             if (tickCounter >= 1200) {
                 tickCounter = 0;
-                NetworkClient.heartbeat();
             }
         });
 
         ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> {
             resetAnnouncementState();
-            SessionManager.getInstance().setSessionKeyPair(CryptoUtils.generateSessionKeyPair());
-            NetworkClient.register();
         });
         
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
             resetAnnouncementState();
-            NetworkClient.unregister();
-            SessionManager.getInstance().reset();
         });
 
         ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
@@ -109,16 +87,6 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                         .executes(ctx -> {
                             String status = PingEqualizerState.getInstance().getStatusMessage();
                             sendLocalMessage(status);
-                            
-                            SessionManager sm = SessionManager.getInstance();
-                            String sessionId = sm.getSessionId();
-                            if (sessionId != null) {
-                                String maskedId = sessionId.substring(0, 8) + "...";
-                                String valStatus = sm.isValidated() ? "Validated" : "Pending";
-                                sendLocalMessage("Session: " + maskedId + " (" + valStatus + ")");
-                            } else {
-                                sendLocalMessage("Session: Not connected");
-                            }
                             return 1;
                         })
                     )
@@ -128,37 +96,6 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                             notifyStateChange("PE: Off");
                             return 1;
                         })
-                    )
-                    .then(ClientCommandManager.literal("validate")
-                        .then(ClientCommandManager.argument("username", StringArgumentType.string())
-                            .executes(ctx -> {
-                                String username = StringArgumentType.getString(ctx, "username");
-                                sendLocalMessage("...");
-                                NetworkClient.validateUser(username).thenAccept(result -> {
-                                    Text message;
-                                    if (result != null && result.isFound()) {
-                                        long secondsAgo = (System.currentTimeMillis() - result.getLastValidated()) / 1000;
-                                        String details = String.format(" (v%s, +%dms, b:%dms, last:%ds ago)", 
-                                            result.getModVersion(), 
-                                            result.getAddedDelayMs(), 
-                                            result.getBasePingMs(),
-                                            secondsAgo);
-                                        
-                                        if ("VALIDATED".equals(result.getStatus())) {
-                                            message = Text.literal("+ " + result.getPlayerUsername() + details).formatted(Formatting.GREEN);
-                                        } else {
-                                            message = Text.literal("? " + result.getPlayerUsername() + ": " + result.getStatus() + details).formatted(Formatting.YELLOW);
-                                        }
-                                    } else {
-                                        message = Text.literal("- " + username).formatted(Formatting.RED);
-                                    }
-                                    if (MinecraftClient.getInstance().player != null) {
-                                        MinecraftClient.getInstance().player.sendMessage(message, false);
-                                    }
-                                });
-                                return 1;
-                            })
-                        )
                     )
             );
 
