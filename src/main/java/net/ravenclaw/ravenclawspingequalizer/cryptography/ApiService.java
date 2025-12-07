@@ -17,7 +17,7 @@ import com.google.gson.JsonParser;
 
 public final class ApiService {
 
-    private static final String API_BASE_URL = "https://api.ravenclaw.net";
+    private static final String API_BASE_URL = "localhost:3000"; // Replace with actual API base URL
     private static final int TIMEOUT_MS = 10000;
     private static final Gson GSON = new Gson();
 
