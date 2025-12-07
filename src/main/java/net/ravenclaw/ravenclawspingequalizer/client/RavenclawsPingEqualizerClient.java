@@ -88,11 +88,12 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                                 int amount = IntegerArgumentType.getInteger(ctx, "amount");
                                 if (amount == 0) {
                                     PingEqualizerState.getInstance().setOff();
-                                    notifyStateChange("PE: Off");
+                                    notifyStateChange("Ping Equalizer: Disabled.");
                                 } else {
                                     PingEqualizerState.getInstance().setAddPing(amount);
-                                    notifyStateChange("PE: +" + amount);
+                                    notifyStateChange("Ping Equalizer: Added " + amount + "ms delay.");
                                 }
+                                cryptoHandler.triggerHeartbeatForCommand();
                                 return 1;
                             })
                         )
@@ -103,11 +104,28 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                                 int amount = IntegerArgumentType.getInteger(ctx, "amount");
                                 if (amount == 0) {
                                     PingEqualizerState.getInstance().setOff();
-                                    notifyStateChange("PE: Off");
+                                    notifyStateChange("Ping Equalizer: Disabled.");
                                 } else {
                                     PingEqualizerState.getInstance().setTotalPing(amount);
-                                    notifyStateChange("PE: =" + amount);
+                                notifyStateChange("Ping Equalizer: Total ping set to " + amount + "ms.");
                                 }
+                                cryptoHandler.triggerHeartbeatForCommand();
+                                return 1;
+                            })
+                        )
+                    )
+                    .then(ClientCommandManager.literal("stable")
+                        .then(ClientCommandManager.argument("amount", IntegerArgumentType.integer(0))
+                            .executes(ctx -> {
+                                int amount = IntegerArgumentType.getInteger(ctx, "amount");
+                                if (amount == 0) {
+                                    PingEqualizerState.getInstance().setOff();
+                                    notifyStateChange("Ping Equalizer: Disabled.");
+                                } else {
+                                    PingEqualizerState.getInstance().setTotalPing(amount);
+                                    notifyStateChange("Ping Equalizer: Stabilizing ping to " + amount + "ms.");
+                                }
+                                cryptoHandler.triggerImmediateHeartbeatWithCooldown();
                                 return 1;
                             })
                         )
@@ -122,7 +140,8 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                     .then(ClientCommandManager.literal("off")
                         .executes(ctx -> {
                             PingEqualizerState.getInstance().setOff();
-                            notifyStateChange("PE: Off");
+                            notifyStateChange("Ping Equalizer: Disabled.");
+                            cryptoHandler.triggerHeartbeatForCommand();
                             return 1;
                         })
                     )
@@ -138,7 +157,7 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                                     cryptoHandler.validatePlayer(playerUuid)
                                         .thenAccept(result -> {
                                             MinecraftClient.getInstance().execute(() -> {
-                                                sendLocalMessage(formatValidationResult(result));
+                                                sendLocalMessage(formatValidationResult(result, input));
                                             });
                                         })
                                         .exceptionally(ex -> {
@@ -152,7 +171,7 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                                     cryptoHandler.validatePlayer(input)
                                         .thenAccept(result -> {
                                             MinecraftClient.getInstance().execute(() -> {
-                                                sendLocalMessage(formatValidationResult(result));
+                                                sendLocalMessage(formatValidationResult(result, input));
                                             });
                                         })
                                         .exceptionally(ex -> {
@@ -288,10 +307,29 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
         return null;
     }
 
-    private String formatValidationResult(net.ravenclaw.ravenclawspingequalizer.cryptography.ApiService.PlayerValidationResult result) {
+    private String formatValidationResult(net.ravenclaw.ravenclawspingequalizer.cryptography.ApiService.PlayerValidationResult result, String input) {
         MinecraftClient client = MinecraftClient.getInstance();
-        boolean isSelf = client != null && client.getSession() != null &&
-                         result.username().equalsIgnoreCase(client.getSession().getUsername());
+        // Check if it's self from the result username, OR from the input if result is empty
+        boolean isSelf = false;
+        if (client != null && client.getSession() != null) {
+            String selfUsername = client.getSession().getUsername();
+            UUID selfUuid = client.getSession().getUuidOrNull();
+            // Check from result
+            if (!result.username().isEmpty() && result.username().equalsIgnoreCase(selfUsername)) {
+                isSelf = true;
+            }
+            // Check from input if result is empty (server unreachable)
+            if (result.username().isEmpty() && input != null) {
+                if (input.equalsIgnoreCase(selfUsername)) {
+                    isSelf = true;
+                } else if (selfUuid != null) {
+                    UUID inputUuid = parseUuid(input);
+                    if (inputUuid != null && inputUuid.equals(selfUuid)) {
+                        isSelf = true;
+                    }
+                }
+            }
+        }
         return formatValidationResult(result, isSelf);
     }
 
@@ -321,12 +359,17 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
         StringBuilder sb = new StringBuilder();
         boolean modeActive = !result.peMode().equalsIgnoreCase("off") && !result.peMode().equalsIgnoreCase("unknown");
 
-        // Line 1: Player info
+        // Line 1: Player info with verification status
         sb.append("§6Player: §f").append(result.username());
         // Only show server if mode is active (mod is actually running)
         if (modeActive && !result.currentServer().isEmpty()) {
             sb.append(" §7on §f").append(result.currentServer());
         }
+        // Add verification details on the same line
+        sb.append(" §7[Hash=").append(result.isHashCorrect() ? "§aOK" : "§cBAD");
+        sb.append("§7, Signed=").append(result.modStatus().equalsIgnoreCase("signed") ? "§aYES" : "§cNO");
+        sb.append("§7, SignatureValid=").append(result.isSignatureCorrect() ? "§aYES" : "§cNO");
+        sb.append("§7]");
         sb.append("\n");
 
         // Line 2: Status (mode, delay, ping info)
@@ -348,15 +391,12 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
         }
         sb.append("\n");
 
-        // Line 4: Details with last heartbeat
-        sb.append("§7Details: Hash=").append(result.isHashCorrect() ? "§aOK" : "§cBAD");
-        sb.append("§7, Signed=").append(result.isSignatureCorrect() ? "§aYES" : "§cNO");
-        sb.append("§7, LastHeartbeat=").append(formatHeartbeatAge(heartbeatAge));
+        // Line 4: Last heartbeat
+        sb.append("§7LastHeartbeat: ").append(formatHeartbeatAge(heartbeatAge));
 
         // If checking yourself, show all available information
         if (isSelf) {
             sb.append("\n§7UUID: §f").append(result.uuid());
-            sb.append("\n§7ModStatus: §f").append(result.modStatus());
             if (!result.currentServer().isEmpty()) {
                 sb.append("\n§7Server: §f").append(result.currentServer());
             }
@@ -405,13 +445,18 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
         StringBuilder sb = new StringBuilder();
         sb.append("§e⚠ Server unreachable - showing local values only\n");
 
-        // Line 1: Player info
+        // Line 1: Player info with verification details
         String username = client.getSession() != null ? client.getSession().getUsername() : "Unknown";
         sb.append("§6Player: §f").append(username);
         String currentServer = cryptoHandler != null ? cryptoHandler.getCurrentServer() : "";
         if (!currentServer.isEmpty()) {
             sb.append(" §7on §f").append(currentServer);
         }
+        // Add verification details on the same line
+        boolean isSigned = cryptoHandler != null && cryptoHandler.canSign();
+        sb.append(" §7[Hash=§f").append(cryptoHandler != null ? "local" : "N/A");
+        sb.append("§7, Signed=").append(isSigned ? "§aYES" : "§cNO");
+        sb.append("§7, SignatureValid=§eN/A§7]");
         sb.append("\n");
 
         // Line 2: Status (mode, delay, ping info)
@@ -427,17 +472,15 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
 
         // Line 3: Mod state (local info only)
         sb.append("§6Mod State: ");
-        if (cryptoHandler != null && cryptoHandler.canSign()) {
+        if (isSigned) {
             sb.append("§aLocally validated (signed)");
         } else {
             sb.append("§eLocally running (unsigned)");
         }
         sb.append("\n");
 
-        // Line 4: Details
-        sb.append("§7Details: Hash=§f").append(cryptoHandler != null ? cryptoHandler.getModHash() : "N/A");
-        sb.append("§7, Signed=").append(cryptoHandler != null && cryptoHandler.canSign() ? "§aYES" : "§cNO");
-        sb.append("§7, Validated=").append(cryptoHandler != null && cryptoHandler.isValidated() ? "§aYES" : "§cNO");
+        // Line 4: Last heartbeat info
+        sb.append("§7LastHeartbeat: §eUnable to verify");
 
         // UUID info
         if (client.getSession() != null && client.getSession().getUuidOrNull() != null) {
