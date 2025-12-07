@@ -10,10 +10,6 @@ import net.minecraft.network.packet.c2s.query.QueryPingC2SPacket;
 import net.minecraft.network.packet.s2c.query.PingResultS2CPacket;
 import net.minecraft.util.Util;
 
-/**
- * Manages ping equalization state and delay calculations.
- * Modes: ADD (fixed added RTT), TOTAL (target total RTT), MATCH (match another player's reported ping).
- */
 public class PingEqualizerState {
     public enum Mode { OFF, ADD, TOTAL, MATCH }
 
@@ -56,7 +52,6 @@ public class PingEqualizerState {
     private PingEqualizerState() {}
     public static PingEqualizerState getInstance() { return INSTANCE; }
 
-    // Mode setters
     public void setOff() {
         currentMode = Mode.OFF;
         currentDelayMs = 0;
@@ -207,9 +202,9 @@ public class PingEqualizerState {
 
         if (preciseDelay != targetDelay) {
             double diff = targetDelay - preciseDelay;
-            double maxStep = 5.0; // Max 5ms change per tick
-            double step = diff * 0.1; // 10% approach
-            
+            double maxStep = 5.0;
+            double step = diff * 0.1;
+
             if (Math.abs(step) > maxStep) {
                 step = Math.signum(step) * maxStep;
             }
@@ -266,6 +261,18 @@ public class PingEqualizerState {
 
     public Mode getMode() {
         return currentMode;
+    }
+
+    public int getCurrentDelayMs() {
+        return (int) currentDelayMs;
+    }
+
+    public int getBasePing() {
+        return lastValidBasePing;
+    }
+
+    public int getTotalPing() {
+        return lastValidBasePing + (int) currentDelayMs;
     }
 
     public long getOutboundDelayPortion() {

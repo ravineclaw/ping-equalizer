@@ -25,7 +25,6 @@ import net.minecraft.network.packet.c2s.common.SyncedClientOptions;
 import net.minecraft.text.Text;
 import net.ravenclaw.ravenclawspingequalizer.PingEqualizerState;
 import net.ravenclaw.ravenclawspingequalizer.cryptography.CryptoHandler;
-import net.ravenclaw.ravenclawspingequalizer.cryptography.CryptoUtils;
 
 public class RavenclawsPingEqualizerClient implements ClientModInitializer {
 
@@ -55,14 +54,19 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
 
         ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> {
             resetAnnouncementState();
+            if (handler.getServerInfo() != null) {
+                cryptoHandler.setCurrentServer(handler.getServerInfo().address);
+            } else {
+                cryptoHandler.setCurrentServer("");
+            }
         });
         
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
             resetAnnouncementState();
+            cryptoHandler.setCurrentServer("");
         });
 
         ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
-            // Suggestion provider for online player names
             SuggestionProvider<FabricClientCommandSource> onlinePlayerSuggestions = (context, builder) -> {
                 MinecraftClient mc = MinecraftClient.getInstance();
                 if (mc.getNetworkHandler() != null) {
@@ -133,7 +137,7 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                                         cryptoHandler.validatePlayer(playerUuid)
                                             .thenAccept(result -> {
                                                 MinecraftClient.getInstance().execute(() -> {
-                                                    sendLocalMessage(result.message());
+                                                    sendLocalMessage(formatValidationResult(result));
                                                 });
                                             })
                                             .exceptionally(ex -> {
@@ -158,7 +162,7 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                                     cryptoHandler.validatePlayer(username)
                                         .thenAccept(result -> {
                                             MinecraftClient.getInstance().execute(() -> {
-                                                sendLocalMessage(result.message());
+                                                sendLocalMessage(formatValidationResult(result));
                                             });
                                         })
                                         .exceptionally(ex -> {
@@ -262,5 +266,164 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
         if (client.player != null) {
             client.player.sendMessage(Text.literal(message), false);
         }
+    }
+
+    private String formatValidationResult(net.ravenclaw.ravenclawspingequalizer.cryptography.ApiService.PlayerValidationResult result) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        boolean isSelf = client != null && client.getSession() != null &&
+                         result.username().equalsIgnoreCase(client.getSession().getUsername());
+        return formatValidationResult(result, isSelf);
+    }
+
+    private String formatValidationResult(net.ravenclaw.ravenclawspingequalizer.cryptography.ApiService.PlayerValidationResult result, boolean isSelf) {
+        // Handle server unreachable case
+        if (result.isServerUnreachable()) {
+            if (isSelf) {
+                // Fall back to client-side values when validating yourself
+                return formatClientSideFallback();
+            }
+            return "§cUnable to reach validation server. Please try again later.";
+        }
+
+        if (!result.isConnected()) {
+            return "§cPlayer not found or has never connected.";
+        }
+
+        // Check if heartbeat is stale (over 40 seconds ago)
+        long now = System.currentTimeMillis();
+        long heartbeatAge = now - result.lastHeartbeat();
+        boolean isStale = heartbeatAge > 40000;
+
+        if (isStale && !isSelf) {
+            return "§cPlayer is not currently connected. Last seen: " + formatHeartbeatAge(heartbeatAge);
+        }
+
+        StringBuilder sb = new StringBuilder();
+        boolean modeActive = !result.peMode().equalsIgnoreCase("off") && !result.peMode().equalsIgnoreCase("unknown");
+
+        // Line 1: Player info
+        sb.append("§6Player: §f").append(result.username());
+        // Only show server if mode is active (mod is actually running)
+        if (modeActive && !result.currentServer().isEmpty()) {
+            sb.append(" §7on §f").append(result.currentServer());
+        }
+        sb.append("\n");
+
+        // Line 2: Status (mode, delay, ping info)
+        String modeDisplay = formatMode(result.peMode());
+        sb.append("§6Status: §f").append(modeDisplay);
+        if (modeActive) {
+            sb.append(" §7| Delay: §f").append(result.peDelay()).append("ms");
+            sb.append(" §7| Base: §f").append(result.peBasePing()).append("ms");
+            sb.append(" §7| Total: §f").append(result.peTotalPing()).append("ms");
+        }
+        sb.append("\n");
+
+        // Line 3: Mod state description
+        sb.append("§6Mod State: ");
+        if (isStale) {
+            sb.append("§cHeartbeat stale. Last seen: ").append(formatHeartbeatAge(heartbeatAge));
+        } else {
+            sb.append(getModStateDescription(result.isHashCorrect(), result.isSignatureCorrect(), result.modStatus()));
+        }
+        sb.append("\n");
+
+        // Line 4: Details with last heartbeat
+        sb.append("§7Details: Hash=").append(result.isHashCorrect() ? "§aOK" : "§cBAD");
+        sb.append("§7, Signed=").append(result.isSignatureCorrect() ? "§aYES" : "§cNO");
+        sb.append("§7, LastHeartbeat=").append(formatHeartbeatAge(heartbeatAge));
+
+        // If checking yourself, show all available information
+        if (isSelf) {
+            sb.append("\n§7UUID: §f").append(result.uuid());
+            sb.append("\n§7ModStatus: §f").append(result.modStatus());
+            if (!result.currentServer().isEmpty()) {
+                sb.append("\n§7Server: §f").append(result.currentServer());
+            }
+        }
+
+        return sb.toString();
+    }
+
+    private String formatMode(String mode) {
+        return switch (mode.toLowerCase()) {
+            case "off" -> "OFF";
+            case "add" -> "ADD";
+            case "total" -> "TOTAL";
+            case "match" -> "MATCH";
+            default -> mode.toUpperCase();
+        };
+    }
+
+    private String formatHeartbeatAge(long ageMs) {
+        long seconds = ageMs / 1000;
+        if (seconds < 60) {
+            return (seconds <= 40 ? "§a" : "§c") + seconds + "s ago";
+        }
+        long minutes = seconds / 60;
+        return "§c" + minutes + "m ago";
+    }
+
+    private String getModStateDescription(boolean hashCorrect, boolean signatureCorrect, String modStatus) {
+        if (hashCorrect && signatureCorrect) {
+            return "§aFully validated.";
+        } else if (hashCorrect && modStatus.equalsIgnoreCase("unsigned")) {
+            return "§cSignature missing. The mod is not cryptographically verified.";
+        } else if (hashCorrect && !signatureCorrect) {
+            return "§cSignature verification failed. The status cannot be trusted.";
+        } else if (!hashCorrect && signatureCorrect) {
+            return "§cMod hash mismatch with valid signature. Private key is compromised.";
+        } else {
+            return "§cModified mod with no valid signature. Status cannot be trusted.";
+        }
+    }
+
+    private String formatClientSideFallback() {
+        MinecraftClient client = MinecraftClient.getInstance();
+        PingEqualizerState peState = PingEqualizerState.getInstance();
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("§e⚠ Server unreachable - showing local values only\n");
+
+        // Line 1: Player info
+        String username = client.getSession() != null ? client.getSession().getUsername() : "Unknown";
+        sb.append("§6Player: §f").append(username);
+        String currentServer = cryptoHandler != null ? cryptoHandler.getCurrentServer() : "";
+        if (!currentServer.isEmpty()) {
+            sb.append(" §7on §f").append(currentServer);
+        }
+        sb.append("\n");
+
+        // Line 2: Status (mode, delay, ping info)
+        String modeDisplay = formatMode(peState.getMode().name());
+        boolean modeActive = peState.getMode() != PingEqualizerState.Mode.OFF;
+        sb.append("§6Status: §f").append(modeDisplay);
+        if (modeActive) {
+            sb.append(" §7| Delay: §f").append(peState.getCurrentDelayMs()).append("ms");
+            sb.append(" §7| Base: §f").append(peState.getBasePing()).append("ms");
+            sb.append(" §7| Total: §f").append(peState.getTotalPing()).append("ms");
+        }
+        sb.append("\n");
+
+        // Line 3: Mod state (local info only)
+        sb.append("§6Mod State: ");
+        if (cryptoHandler != null && cryptoHandler.canSign()) {
+            sb.append("§aLocally validated (signed)");
+        } else {
+            sb.append("§eLocally running (unsigned)");
+        }
+        sb.append("\n");
+
+        // Line 4: Details
+        sb.append("§7Details: Hash=§f").append(cryptoHandler != null ? cryptoHandler.getModHash() : "N/A");
+        sb.append("§7, Signed=").append(cryptoHandler != null && cryptoHandler.canSign() ? "§aYES" : "§cNO");
+        sb.append("§7, Validated=").append(cryptoHandler != null && cryptoHandler.isValidated() ? "§aYES" : "§cNO");
+
+        // UUID info
+        if (client.getSession() != null && client.getSession().getUuidOrNull() != null) {
+            sb.append("\n§7UUID: §f").append(client.getSession().getUuidOrNull());
+        }
+
+        return sb.toString();
     }
 }

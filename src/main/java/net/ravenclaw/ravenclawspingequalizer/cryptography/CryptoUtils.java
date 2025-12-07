@@ -25,7 +25,6 @@ public final class CryptoUtils {
     private CryptoUtils() {
     }
 
-    // placeholder - replace with real server public key
     private static final String SERVER_PUBLIC_KEY_PEM = """
             -----BEGIN PUBLIC KEY-----
             MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0000000000000000000
@@ -60,6 +59,7 @@ public final class CryptoUtils {
             return false;
         }
     }
+
 
     public static boolean verifyServerSignature(String payload, String base64Signature) {
         return verifyServerSignature(payload.getBytes(java.nio.charset.StandardCharsets.UTF_8), base64Signature);
