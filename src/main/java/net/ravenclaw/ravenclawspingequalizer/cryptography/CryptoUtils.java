@@ -13,14 +13,77 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.PrivateKey;
 import java.security.ProtectionDomain;
+import java.security.PublicKey;
 import java.security.Signature;
 import java.security.spec.PKCS8EncodedKeySpec;
+import java.security.spec.X509EncodedKeySpec;
 import java.util.Base64;
 import java.util.Comparator;
 import java.util.stream.Stream;
 
 public final class CryptoUtils {
     private CryptoUtils() {
+    }
+
+    // placeholder - replace with real server public key
+    private static final String SERVER_PUBLIC_KEY_PEM = """
+            -----BEGIN PUBLIC KEY-----
+            MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0000000000000000000
+            0000000000000000000000000000000000000000000000000000000000000000
+            0000000000000000000000000000000000000000000000000000000000000000
+            0000000000000000000000000000000000000000000000000000000000000000
+            0000000000000000000000000000000000000000000000000000000000000000
+            000000000000000000000000000000000000000000000000000000000000AQAB
+            -----END PUBLIC KEY-----
+            """;
+
+    public static boolean verifyServerSignature(byte[] payload, byte[] signature) {
+        try {
+            PublicKey publicKey = getServerPublicKey();
+            if (publicKey == null) {
+                return false;
+            }
+            Signature sig = Signature.getInstance("SHA256withRSA");
+            sig.initVerify(publicKey);
+            sig.update(payload);
+            return sig.verify(signature);
+        } catch (GeneralSecurityException e) {
+            return false;
+        }
+    }
+
+    public static boolean verifyServerSignature(byte[] payload, String base64Signature) {
+        try {
+            byte[] signature = Base64.getDecoder().decode(base64Signature);
+            return verifyServerSignature(payload, signature);
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
+    }
+
+    public static boolean verifyServerSignature(String payload, String base64Signature) {
+        return verifyServerSignature(payload.getBytes(java.nio.charset.StandardCharsets.UTF_8), base64Signature);
+    }
+
+    public static PublicKey getServerPublicKey() {
+        try {
+            return parsePublicKeyFromPEM(SERVER_PUBLIC_KEY_PEM);
+        } catch (GeneralSecurityException e) {
+            return null;
+        }
+    }
+
+    public static PublicKey parsePublicKeyFromPEM(String pem) throws GeneralSecurityException {
+        String normalized = pem.trim();
+        if (normalized.contains("-----BEGIN")) {
+            normalized = normalized.replaceAll("-----BEGIN [A-Z ]+-----", "");
+            normalized = normalized.replaceAll("-----END [A-Z ]+-----", "");
+        }
+        normalized = normalized.replaceAll("\\s", "");
+        byte[] decoded = Base64.getDecoder().decode(normalized);
+        X509EncodedKeySpec spec = new X509EncodedKeySpec(decoded);
+        KeyFactory kf = KeyFactory.getInstance("RSA");
+        return kf.generatePublic(spec);
     }
 
     public static byte[] calculateModHash() {
@@ -86,7 +149,6 @@ public final class CryptoUtils {
                 sig.update(payload);
                 return sig.sign();
             } catch (GeneralSecurityException ex) {
-                // Fallback to digest
                 MessageDigest digest = MessageDigest.getInstance("SHA-256");
                 digest.update(privateKeyPemOrString.getBytes(java.nio.charset.StandardCharsets.UTF_8));
                 digest.update(payload);

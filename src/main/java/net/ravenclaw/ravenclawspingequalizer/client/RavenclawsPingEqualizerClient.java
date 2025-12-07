@@ -2,10 +2,13 @@ package net.ravenclaw.ravenclawspingequalizer.client;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 import com.mojang.brigadier.arguments.IntegerArgumentType;
+import com.mojang.brigadier.arguments.StringArgumentType;
+import com.mojang.brigadier.suggestion.SuggestionProvider;
 import com.mojang.brigadier.tree.LiteralCommandNode;
 
 import net.fabricmc.api.ClientModInitializer;
@@ -15,11 +18,14 @@ import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.network.PlayerListEntry;
 import net.minecraft.network.message.ChatVisibility;
 import net.minecraft.network.packet.c2s.common.ClientOptionsC2SPacket;
 import net.minecraft.network.packet.c2s.common.SyncedClientOptions;
 import net.minecraft.text.Text;
 import net.ravenclaw.ravenclawspingequalizer.PingEqualizerState;
+import net.ravenclaw.ravenclawspingequalizer.cryptography.CryptoHandler;
+import net.ravenclaw.ravenclawspingequalizer.cryptography.CryptoUtils;
 
 public class RavenclawsPingEqualizerClient implements ClientModInitializer {
 
@@ -31,10 +37,15 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
     private boolean spoofInProgress = false;
     private int tickCounter = 0;
 
+    public static CryptoHandler cryptoHandler;
+
     @Override
     public void onInitializeClient() {
+        cryptoHandler = new CryptoHandler();
+
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             PingEqualizerState.getInstance().tick(client);
+            cryptoHandler.tick();
             
             tickCounter++;
             if (tickCounter >= 1200) {
@@ -51,6 +62,20 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
         });
 
         ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
+            // Suggestion provider for online player names
+            SuggestionProvider<FabricClientCommandSource> onlinePlayerSuggestions = (context, builder) -> {
+                MinecraftClient mc = MinecraftClient.getInstance();
+                if (mc.getNetworkHandler() != null) {
+                    for (PlayerListEntry entry : mc.getNetworkHandler().getPlayerList()) {
+                        String name = entry.getProfile().getName();
+                        if (name.toLowerCase().startsWith(builder.getRemainingLowerCase())) {
+                            builder.suggest(name);
+                        }
+                    }
+                }
+                return builder.buildFuture();
+            };
+
             LiteralCommandNode<FabricClientCommandSource> rootNode = dispatcher.register(
                 ClientCommandManager.literal("pingequalizer")
                     .then(ClientCommandManager.literal("add")
@@ -96,6 +121,56 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                             notifyStateChange("PE: Off");
                             return 1;
                         })
+                    )
+                    .then(ClientCommandManager.literal("validate")
+                        .then(ClientCommandManager.literal("uuid")
+                            .then(ClientCommandManager.argument("uuid", StringArgumentType.string())
+                                .executes(ctx -> {
+                                    String uuidStr = StringArgumentType.getString(ctx, "uuid");
+                                    try {
+                                        UUID playerUuid = UUID.fromString(uuidStr);
+                                        sendLocalMessage("Validating player with UUID: " + playerUuid);
+                                        cryptoHandler.validatePlayer(playerUuid)
+                                            .thenAccept(result -> {
+                                                MinecraftClient.getInstance().execute(() -> {
+                                                    sendLocalMessage(result.message());
+                                                });
+                                            })
+                                            .exceptionally(ex -> {
+                                                MinecraftClient.getInstance().execute(() -> {
+                                                    sendLocalMessage("Error validating player: " + ex.getMessage());
+                                                });
+                                                return null;
+                                            });
+                                    } catch (IllegalArgumentException e) {
+                                        sendLocalMessage("Invalid UUID format");
+                                    }
+                                    return 1;
+                                })
+                            )
+                        )
+                        .then(ClientCommandManager.literal("username")
+                            .then(ClientCommandManager.argument("username", StringArgumentType.word())
+                                .suggests(onlinePlayerSuggestions)
+                                .executes(ctx -> {
+                                    String username = StringArgumentType.getString(ctx, "username");
+                                    sendLocalMessage("Validating player: " + username);
+                                    cryptoHandler.validatePlayer(username)
+                                        .thenAccept(result -> {
+                                            MinecraftClient.getInstance().execute(() -> {
+                                                sendLocalMessage(result.message());
+                                            });
+                                        })
+                                        .exceptionally(ex -> {
+                                            MinecraftClient.getInstance().execute(() -> {
+                                                sendLocalMessage("Error validating player: " + ex.getMessage());
+                                            });
+                                            return null;
+                                        });
+                                    return 1;
+                                })
+                            )
+                        )
                     )
             );
 
