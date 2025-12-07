@@ -149,11 +149,16 @@ public final class ApiService {
 
     private static PlayerValidationResult parseValidationResponse(String response) {
         if (response == null || response.isEmpty()) {
-            return PlayerValidationResult.invalid();
+            return PlayerValidationResult.unreachable();
         }
 
         try {
             JsonObject json = JsonParser.parseString(response).getAsJsonObject();
+
+            // Check if the response has expected API fields - if not, we likely hit a non-API server
+            if (!json.has("is_connected") && !json.has("uuid") && !json.has("username")) {
+                return PlayerValidationResult.unreachable();
+            }
 
             boolean isConnected = json.has("is_connected") && json.get("is_connected").getAsBoolean();
             boolean isHashCorrect = json.has("is_hash_correct") && json.get("is_hash_correct").getAsBoolean();
@@ -184,7 +189,8 @@ public final class ApiService {
                 false
             );
         } catch (Exception e) {
-            return PlayerValidationResult.invalid();
+            // JSON parsing failed or unexpected response structure - server unreachable or wrong endpoint
+            return PlayerValidationResult.unreachable();
         }
     }
 

@@ -127,39 +127,15 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                         })
                     )
                     .then(ClientCommandManager.literal("validate")
-                        .then(ClientCommandManager.literal("uuid")
-                            .then(ClientCommandManager.argument("uuid", StringArgumentType.string())
-                                .executes(ctx -> {
-                                    String uuidStr = StringArgumentType.getString(ctx, "uuid");
-                                    try {
-                                        UUID playerUuid = UUID.fromString(uuidStr);
-                                        sendLocalMessage("Validating player with UUID: " + playerUuid);
-                                        cryptoHandler.validatePlayer(playerUuid)
-                                            .thenAccept(result -> {
-                                                MinecraftClient.getInstance().execute(() -> {
-                                                    sendLocalMessage(formatValidationResult(result));
-                                                });
-                                            })
-                                            .exceptionally(ex -> {
-                                                MinecraftClient.getInstance().execute(() -> {
-                                                    sendLocalMessage("Error validating player: " + ex.getMessage());
-                                                });
-                                                return null;
-                                            });
-                                    } catch (IllegalArgumentException e) {
-                                        sendLocalMessage("Invalid UUID format");
-                                    }
-                                    return 1;
-                                })
-                            )
-                        )
-                        .then(ClientCommandManager.literal("username")
-                            .then(ClientCommandManager.argument("username", StringArgumentType.word())
-                                .suggests(onlinePlayerSuggestions)
-                                .executes(ctx -> {
-                                    String username = StringArgumentType.getString(ctx, "username");
-                                    sendLocalMessage("Validating player: " + username);
-                                    cryptoHandler.validatePlayer(username)
+                        .then(ClientCommandManager.argument("player", StringArgumentType.string())
+                            .suggests(onlinePlayerSuggestions)
+                            .executes(ctx -> {
+                                String input = StringArgumentType.getString(ctx, "player");
+                                UUID playerUuid = parseUuid(input);
+
+                                if (playerUuid != null) {
+                                    sendLocalMessage("Validating player with UUID: " + playerUuid);
+                                    cryptoHandler.validatePlayer(playerUuid)
                                         .thenAccept(result -> {
                                             MinecraftClient.getInstance().execute(() -> {
                                                 sendLocalMessage(formatValidationResult(result));
@@ -171,9 +147,23 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                                             });
                                             return null;
                                         });
-                                    return 1;
-                                })
-                            )
+                                } else {
+                                    sendLocalMessage("Validating player: " + input);
+                                    cryptoHandler.validatePlayer(input)
+                                        .thenAccept(result -> {
+                                            MinecraftClient.getInstance().execute(() -> {
+                                                sendLocalMessage(formatValidationResult(result));
+                                            });
+                                        })
+                                        .exceptionally(ex -> {
+                                            MinecraftClient.getInstance().execute(() -> {
+                                                sendLocalMessage("Error validating player: " + ex.getMessage());
+                                            });
+                                            return null;
+                                        });
+                                }
+                                return 1;
+                            })
                         )
                     )
             );
@@ -266,6 +256,36 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
         if (client.player != null) {
             client.player.sendMessage(Text.literal(message), false);
         }
+    }
+
+    private UUID parseUuid(String input) {
+        if (input == null || input.isEmpty()) {
+            return null;
+        }
+
+        // Try standard UUID format with dashes
+        try {
+            return UUID.fromString(input);
+        } catch (IllegalArgumentException ignored) {
+            // Not a standard UUID format
+        }
+
+        // Try UUID without dashes (32 hex characters)
+        if (input.length() == 32 && input.matches("[0-9a-fA-F]+")) {
+            try {
+                String withDashes = input.substring(0, 8) + "-" +
+                                   input.substring(8, 12) + "-" +
+                                   input.substring(12, 16) + "-" +
+                                   input.substring(16, 20) + "-" +
+                                   input.substring(20, 32);
+                return UUID.fromString(withDashes);
+            } catch (IllegalArgumentException ignored) {
+                // Still not valid
+            }
+        }
+
+        // Not a UUID, treat as username
+        return null;
     }
 
     private String formatValidationResult(net.ravenclaw.ravenclawspingequalizer.cryptography.ApiService.PlayerValidationResult result) {
