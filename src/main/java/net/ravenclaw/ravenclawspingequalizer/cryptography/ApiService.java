@@ -119,13 +119,16 @@ public final class ApiService {
                 String url = API_BASE_URL + "/api/validate/" + playerUuid.toString();
                 String response = httpGet(url);
                 if (response == null) {
+                    // 404 - player not found but server is reachable
                     return PlayerValidationResult.invalid();
                 }
                 return parseValidationResponse(response);
-            } catch (java.net.SocketTimeoutException | java.net.ConnectException | java.net.UnknownHostException e) {
+            } catch (java.io.IOException e) {
+                // Network issues, timeouts, connection refused, unknown host, unexpected response codes
                 return PlayerValidationResult.unreachable();
             } catch (Exception e) {
-                return PlayerValidationResult.invalid();
+                // Other unexpected errors - treat as unreachable
+                return PlayerValidationResult.unreachable();
             }
         });
     }
@@ -136,13 +139,16 @@ public final class ApiService {
                 String url = API_BASE_URL + "/api/validate/" + URLEncoder.encode(username, StandardCharsets.UTF_8);
                 String response = httpGet(url);
                 if (response == null) {
+                    // 404 - player not found but server is reachable
                     return PlayerValidationResult.invalid();
                 }
                 return parseValidationResponse(response);
-            } catch (java.net.SocketTimeoutException | java.net.ConnectException | java.net.UnknownHostException e) {
+            } catch (java.io.IOException e) {
+                // Network issues, timeouts, connection refused, unknown host, unexpected response codes
                 return PlayerValidationResult.unreachable();
             } catch (Exception e) {
-                return PlayerValidationResult.invalid();
+                // Other unexpected errors - treat as unreachable
+                return PlayerValidationResult.unreachable();
             }
         });
     }
@@ -240,8 +246,13 @@ public final class ApiService {
         conn.setRequestProperty("Accept", "application/json");
 
         int responseCode = conn.getResponseCode();
-        if (responseCode != 200) {
+        if (responseCode == 404) {
+            // Player not found - return null to indicate invalid (but server is reachable)
             return null;
+        }
+        if (responseCode != 200) {
+            // Other non-200 codes indicate server issues
+            throw new IOException("Unexpected response code: " + responseCode);
         }
 
         try (Scanner scanner = new Scanner(conn.getInputStream(), StandardCharsets.UTF_8)) {
