@@ -24,8 +24,9 @@ stringObfuscation {
     // 1. -PobfuscateStrings is passed
     // 2. buildObfuscated task is run
     // 3. buildAggressive task is run
+    // 4. runClient task is run
     enabled = project.hasProperty('obfuscateStrings') || gradle.startParameter.taskNames.any { taskName ->
-        taskName == 'buildObfuscated' || taskName == 'buildAggressive' || taskName == 'buildAgressive' || taskName == 'obfuscateJar'
+        taskName == 'buildObfuscated' || taskName == 'buildAggressive' || taskName == 'buildAgressive' || taskName == 'obfuscateJar' || taskName == 'runClient'
     }
 }
 
@@ -40,6 +41,16 @@ loom {
     mixin {
         defaultRefmapName = "ravenclawspingequalizer.refmap.json"
         useLegacyMixinAp = true
+    }
+}
+
+afterEvaluate {
+    loom {
+        runs {
+            client {
+                source "build/libs/${project.archives_base_name}-${project.version}-obf.jar"
+            }
+        }
     }
 }
 
@@ -226,6 +237,9 @@ task obfuscateJar(type: proguard.gradle.ProGuardTask) {
     libraryjars "${System.getProperty('java.home')}/jmods/java.desktop.jmod"
     libraryjars "${System.getProperty('java.home')}/jmods/java.logging.jmod"
     
+    // Target Java 21 - forces ProGuard to generate proper stackmap frames
+    target '21'
+
     configuration 'proguard.conf'
 }
 
@@ -292,4 +306,12 @@ task runTestClient(type: JavaExec) {
     standardInput = System.in
     
     dependsOn testClasses
+}
+
+task launch {
+    description = 'Build with obfuscation and launch the Minecraft client'
+    group = 'fabric'
+
+    dependsOn buildAggressive
+    dependsOn 'runClient'
 }

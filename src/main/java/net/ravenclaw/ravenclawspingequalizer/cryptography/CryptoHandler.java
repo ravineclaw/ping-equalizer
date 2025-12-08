@@ -61,19 +61,29 @@ public class CryptoHandler {
             });
     }
 
+    // Flag to prevent overlapping attestation requests
+    private volatile boolean attestationInProgress = false;
+
     public void tick() {
         tickCount++;
 
         if (tickCount % HEARTBEAT_INTERVAL_TICKS == 0) {
             if (currentAttestation == null || currentAttestation.isExpired(tickCount)) {
-                generateAttestation();
+                generateAttestationAsync();
             } else {
-                sendHeartbeat();
+                sendHeartbeatAsync();
             }
         }
     }
 
-    private void generateAttestation() {
+    /**
+     * Generates attestation completely off the main thread to avoid frame drops.
+     */
+    private void generateAttestationAsync() {
+        if (attestationInProgress) {
+            return; // Don't start another if one is in progress
+        }
+
         MinecraftClient client = MinecraftClient.getInstance();
         if (client == null) return;
 
@@ -84,73 +94,94 @@ public class CryptoHandler {
         UUID playerUuid = session.getUuidOrNull();
         if (username == null || playerUuid == null) return;
 
+        String accessToken = session.getAccessToken();
+        var sessionService = client.getSessionService();
+
+        attestationInProgress = true;
         String serverId = generateRandomServerId();
 
-        try {
-            client.getSessionService().joinServer(playerUuid, session.getAccessToken(), serverId);
-        } catch (Exception e) {
-            return;
-        }
+        // Run the blocking joinServer call off the main thread
+        CompletableFuture.runAsync(() -> {
+            try {
+                sessionService.joinServer(playerUuid, accessToken, serverId);
+            } catch (Exception e) {
+                attestationInProgress = false;
+                return;
+            }
 
-        MojangApiClient.getHasJoinedResponse(username, serverId)
-            .thenAccept(mojangResponse -> {
-                if (mojangResponse != null && !mojangResponse.isEmpty()) {
-                    UUID parsedUuid = MojangApiClient.parseUuidFromHasJoinedResponse(mojangResponse);
-                    String parsedUsername = MojangApiClient.parseUsernameFromHasJoinedResponse(mojangResponse);
+            // Now get the hasJoined response (also async)
+            MojangApiClient.getHasJoinedResponse(username, serverId)
+                .thenAccept(mojangResponse -> {
+                    attestationInProgress = false;
+                    if (mojangResponse != null && !mojangResponse.isEmpty()) {
+                        UUID parsedUuid = MojangApiClient.parseUuidFromHasJoinedResponse(mojangResponse);
+                        String parsedUsername = MojangApiClient.parseUsernameFromHasJoinedResponse(mojangResponse);
 
-                    if (parsedUuid != null && parsedUsername != null) {
-                        currentAttestation = new PlayerAttestation(parsedUuid, parsedUsername, serverId, mojangResponse);
-                        sendHeartbeat();
+                        if (parsedUuid != null && parsedUsername != null) {
+                            currentAttestation = new PlayerAttestation(parsedUuid, parsedUsername, serverId, mojangResponse);
+                            sendHeartbeatAsync();
+                        }
                     }
-                }
-            })
-            .exceptionally(ex -> {
-                currentAttestation = null;
-                return null;
-            });
+                })
+                .exceptionally(ex -> {
+                    attestationInProgress = false;
+                    currentAttestation = null;
+                    return null;
+                });
+        }).exceptionally(ex -> {
+            attestationInProgress = false;
+            return null;
+        });
     }
 
-    private void sendHeartbeat() {
+    private void sendHeartbeatAsync() {
         if (currentAttestation == null || currentAttestation.isExpired(tickCount)) {
             isValidated = false;
             return;
         }
 
+        // 1. Generate timestamp ONCE
+        long timestamp = System.currentTimeMillis();
+
         String signature = null;
         if (canSign && reconstructedKey != null && !reconstructedKey.isEmpty()) {
-            signature = createAndSignHeartbeatPayload();
+            // 2. Pass timestamp to signing method
+            signature = createAndSignHeartbeatPayload(timestamp);
         }
 
         String modStatus = canSign ? "signed" : "unsigned";
 
         net.ravenclaw.ravenclawspingequalizer.PingEqualizerState peState =
-            net.ravenclaw.ravenclawspingequalizer.PingEqualizerState.getInstance();
+                net.ravenclaw.ravenclawspingequalizer.PingEqualizerState.getInstance();
         String peMode = peState.getMode().name().toLowerCase();
         int peDelay = peState.getCurrentDelayMs();
         int peBasePing = peState.getBasePing();
         int peTotalPing = peState.getTotalPing();
 
-        ApiService.HeartbeatPayload payload = ApiService.HeartbeatPayload.create(
-            modHash,
-            currentAttestation,
-            currentServerAddress,
-            modStatus,
-            signature,
-            peMode,
-            peDelay,
-            peBasePing,
-            peTotalPing
+        // 3. Pass the SAME timestamp to the payload
+        HeartbeatPayload payload = HeartbeatPayload.create(
+                modHash,
+                currentAttestation,
+                currentServerAddress,
+                modStatus,
+                signature,
+                peMode,
+                peDelay,
+                peBasePing,
+                peTotalPing,
+                timestamp // <--- Pass it here
         );
 
         ApiService.sendHeartbeat(payload)
-            .thenAccept(success -> isValidated = success)
-            .exceptionally(ex -> {
-                isValidated = false;
-                return null;
-            });
+                .thenAccept(success -> isValidated = success)
+                .exceptionally(ex -> {
+                    isValidated = false;
+                    return null;
+                });
     }
 
-    private String createAndSignHeartbeatPayload() {
+    // Update this method to accept the timestamp
+    private String createAndSignHeartbeatPayload(long timestamp) {
         StringBuilder payload = new StringBuilder();
         payload.append(modHash);
         payload.append("|");
@@ -158,7 +189,7 @@ public class CryptoHandler {
         payload.append("|");
         payload.append(currentAttestation.getServerId());
         payload.append("|");
-        payload.append(System.currentTimeMillis());
+        payload.append(timestamp); // <--- Use the passed timestamp
 
         try {
             PrivateKey privateKey = CryptoUtils.parsePrivateKeyFromPEM(reconstructedKey);
@@ -260,15 +291,16 @@ public class CryptoHandler {
         recordHeartbeat();
 
         if (currentAttestation == null || currentAttestation.isExpired(tickCount)) {
-            generateAttestation();
+            generateAttestationAsync();
         } else {
-            sendHeartbeat();
+            sendHeartbeatAsync();
         }
     }
 
     /**
      * Triggers a heartbeat for commands (validate, status change).
      * Applies anti-spam protection: only cooldown if spamming.
+     * Runs fully async to avoid blocking the main thread.
      */
     public void triggerHeartbeatForCommand() {
         if (!canSendHeartbeat()) {
@@ -283,9 +315,9 @@ public class CryptoHandler {
         recordHeartbeat();
 
         if (currentAttestation == null || currentAttestation.isExpired(tickCount)) {
-            generateAttestation();
+            generateAttestationAsync();
         } else {
-            sendHeartbeat();
+            sendHeartbeatAsync();
         }
     }
 

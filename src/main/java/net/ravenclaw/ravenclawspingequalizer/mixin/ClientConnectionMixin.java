@@ -79,6 +79,9 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
     }
 
     private boolean pingEqualizer$handleSend(Packet<?> packet, Runnable sendAction) {
+        if (isDelayedSend == null || sendQueue == null) {
+            return false;
+        }
         if (isDelayedSend.get() || pingEqualizer$suppressDelays) {
             return false;
         }
@@ -194,6 +197,9 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
     @Inject(method = "channelRead0(Lio/netty/channel/ChannelHandlerContext;Lnet/minecraft/network/packet/Packet;)V", at = @At("HEAD"), cancellable = true)
     private void pingEqualizer$onChannelRead(ChannelHandlerContext context, Packet<?> packet, CallbackInfo ci) {
         pingEqualizer$lastReceiveContext = context;
+        if (isDelayedReceive == null || receiveQueue == null) {
+            return;
+        }
         if (isDelayedReceive.get() || pingEqualizer$suppressDelays) {
             return;
         }
@@ -326,7 +332,9 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
         boolean playPhase = phase == NetworkPhase.PLAY;
         pingEqualizer$suppressDelays = !playPhase;
         if (!playPhase) {
-            pingEqualizer$flushQueuesNow();
+            if (sendQueue != null || receiveQueue != null) {
+                pingEqualizer$flushQueuesNow();
+            }
             PingEqualizerState.getInstance().suspendForProtocolChange();
         }
     }
@@ -345,16 +353,23 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
 
     @Unique
     private void pingEqualizer$flushSendQueueNow() {
+        if (sendQueue == null) {
+            return;
+        }
         if (channel == null || channel.eventLoop() == null) {
             sendQueue.clear();
-            processingSendQueue.set(false);
+            if (processingSendQueue != null) {
+                processingSendQueue.set(false);
+            }
             return;
         }
         Runnable flush = () -> {
-            if (!sendQueue.isEmpty()) {
+            if (sendQueue != null && !sendQueue.isEmpty()) {
                 sendQueue.clear();
             }
-            processingSendQueue.set(false);
+            if (processingSendQueue != null) {
+                processingSendQueue.set(false);
+            }
         };
         if (channel.eventLoop().inEventLoop()) {
             flush.run();
@@ -365,17 +380,24 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
 
     @Unique
     private void pingEqualizer$flushReceiveQueueNow() {
+        if (receiveQueue == null) {
+            return;
+        }
         ChannelHandlerContext context = pingEqualizer$lastReceiveContext;
         if (context == null || context.executor() == null) {
             receiveQueue.clear();
-            processingReceiveQueue.set(false);
+            if (processingReceiveQueue != null) {
+                processingReceiveQueue.set(false);
+            }
             return;
         }
         Runnable flush = () -> {
-            if (!receiveQueue.isEmpty()) {
+            if (receiveQueue != null && !receiveQueue.isEmpty()) {
                 receiveQueue.clear();
             }
-            processingReceiveQueue.set(false);
+            if (processingReceiveQueue != null) {
+                processingReceiveQueue.set(false);
+            }
         };
         if (context.executor().inEventLoop()) {
             flush.run();

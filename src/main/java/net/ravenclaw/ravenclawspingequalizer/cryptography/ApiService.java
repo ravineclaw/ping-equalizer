@@ -11,7 +11,6 @@ import java.util.Scanner;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
-import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
@@ -19,8 +18,6 @@ public final class ApiService {
 
     private static final String API_BASE_URL = "http://localhost:3000";
     private static final int TIMEOUT_MS = 10000;
-    private static final Gson GSON = new Gson();
-
     private ApiService() {
     }
 
@@ -52,7 +49,7 @@ public final class ApiService {
         return CompletableFuture.supplyAsync(() -> {
             try {
                 String url = API_BASE_URL + "/api/heartbeat";
-                String jsonPayload = GSON.toJson(payload);
+                String jsonPayload = toHeartbeatJson(payload);
                 String response = httpPost(url, jsonPayload);
 
                 if (response == null || response.isEmpty()) {
@@ -67,51 +64,78 @@ public final class ApiService {
         });
     }
 
-    public record HeartbeatPayload(
-        String modHash,
-        String playerUuid,
-        String username,
-        long timestamp,
-        String currentServer,
-        String modStatus,
-        String minecraftProof,
-        String serverId,
-        String signature,
-        boolean isSigned,
-        String peMode,
-        int peDelay,
-        int peBasePing,
-        int peTotalPing
-    ) {
-        public static HeartbeatPayload create(
-            String modHash,
-            PlayerAttestation attestation,
-            String currentServer,
-            String modStatus,
-            String signature,
-            String peMode,
-            int peDelay,
-            int peBasePing,
-            int peTotalPing
-        ) {
-            return new HeartbeatPayload(
-                modHash,
-                attestation.getPlayerUuid().toString(),
-                attestation.getUsername(),
-                System.currentTimeMillis(),
-                currentServer,
-                modStatus,
-                attestation.getMojangResponse(),
-                attestation.getServerId(),
-                signature,
-                signature != null && !signature.isEmpty(),
-                peMode,
-                peDelay,
-                peBasePing,
-                peTotalPing
-            );
+    // Build the heartbeat JSON by hand to avoid any reflection/annotation reliance under obfuscation.
+    private static String toHeartbeatJson(HeartbeatPayload payload) {
+        StringBuilder sb = new StringBuilder(256);
+        sb.append('{');
+        appendJsonString(sb, "modHash", payload.modHash());
+        appendJsonString(sb, "playerUuid", payload.playerUuid());
+        appendJsonString(sb, "username", payload.username());
+        appendJsonNumber(sb, "timestamp", payload.timestamp());
+        appendJsonString(sb, "currentServer", payload.currentServer());
+        appendJsonString(sb, "modStatus", payload.modStatus());
+        appendJsonString(sb, "minecraftProof", payload.minecraftProof());
+        appendJsonString(sb, "serverId", payload.serverId());
+        appendJsonString(sb, "signature", payload.signature());
+        appendJsonBoolean(sb, "isSigned", payload.isSigned());
+        appendJsonString(sb, "peMode", payload.peMode());
+        appendJsonNumber(sb, "peDelay", payload.peDelay());
+        appendJsonNumber(sb, "peBasePing", payload.peBasePing());
+        appendJsonNumber(sb, "peTotalPing", payload.peTotalPing());
+        if (sb.charAt(sb.length() - 1) == ',') {
+            sb.setLength(sb.length() - 1);
         }
+        sb.append('}');
+        return sb.toString();
     }
+
+    private static void appendJsonString(StringBuilder sb, String key, String value) {
+        sb.append('"').append(key).append('"').append(':');
+        if (value == null) {
+            sb.append("null");
+        } else {
+            sb.append('"').append(escapeJson(value)).append('"');
+        }
+        sb.append(',');
+    }
+
+    private static void appendJsonNumber(StringBuilder sb, String key, long value) {
+        sb.append('"').append(key).append('"').append(':').append(value).append(',');
+    }
+
+    private static void appendJsonNumber(StringBuilder sb, String key, int value) {
+        sb.append('"').append(key).append('"').append(':').append(value).append(',');
+    }
+
+    private static void appendJsonBoolean(StringBuilder sb, String key, boolean value) {
+        sb.append('"').append(key).append('"').append(':').append(value).append(',');
+    }
+
+    private static String escapeJson(String input) {
+        StringBuilder out = new StringBuilder(input.length() + 8);
+        for (int i = 0; i < input.length(); i++) {
+            char c = input.charAt(i);
+            switch (c) {
+                case '"': out.append("\\\""); break;
+                case '\\': out.append("\\\\"); break;
+                case '\b': out.append("\\b"); break;
+                case '\f': out.append("\\f"); break;
+                case '\n': out.append("\\n"); break;
+                case '\r': out.append("\\r"); break;
+                case '\t': out.append("\\t"); break;
+                default:
+                    if (c < 0x20) {
+                        out.append(String.format("\\u%04x", (int) c));
+                    } else {
+                        out.append(c);
+                    }
+            }
+        }
+        return out.toString();
+    }
+
+    // HeartbeatPayload record moved to its own file
+
 
     public static CompletableFuture<PlayerValidationResult> validatePlayerByUuid(UUID playerUuid) {
         return CompletableFuture.supplyAsync(() -> {

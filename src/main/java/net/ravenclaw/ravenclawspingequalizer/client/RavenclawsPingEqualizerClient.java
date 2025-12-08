@@ -45,7 +45,7 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             PingEqualizerState.getInstance().tick(client);
             cryptoHandler.tick();
-            
+
             tickCounter++;
             if (tickCounter >= 1200) {
                 tickCounter = 0;
@@ -60,7 +60,7 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                 cryptoHandler.setCurrentServer("");
             }
         });
-        
+
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
             resetAnnouncementState();
             cryptoHandler.setCurrentServer("");
@@ -81,110 +81,94 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
             };
 
             LiteralCommandNode<FabricClientCommandSource> rootNode = dispatcher.register(
-                ClientCommandManager.literal("pingequalizer")
-                    .then(ClientCommandManager.literal("add")
-                        .then(ClientCommandManager.argument("amount", IntegerArgumentType.integer(0))
-                            .executes(ctx -> {
-                                int amount = IntegerArgumentType.getInteger(ctx, "amount");
-                                if (amount == 0) {
-                                    PingEqualizerState.getInstance().setOff();
-                                    notifyStateChange("Ping Equalizer: Disabled.");
-                                } else {
-                                    PingEqualizerState.getInstance().setAddPing(amount);
-                                    notifyStateChange("Ping Equalizer: Added " + amount + "ms delay.");
-                                }
-                                cryptoHandler.triggerHeartbeatForCommand();
-                                return 1;
-                            })
-                        )
-                    )
-                    .then(ClientCommandManager.literal("total")
-                        .then(ClientCommandManager.argument("amount", IntegerArgumentType.integer(0))
-                            .executes(ctx -> {
-                                int amount = IntegerArgumentType.getInteger(ctx, "amount");
-                                if (amount == 0) {
-                                    PingEqualizerState.getInstance().setOff();
-                                    notifyStateChange("Ping Equalizer: Disabled.");
-                                } else {
-                                    PingEqualizerState.getInstance().setTotalPing(amount);
-                                notifyStateChange("Ping Equalizer: Total ping set to " + amount + "ms.");
-                                }
-                                cryptoHandler.triggerHeartbeatForCommand();
-                                return 1;
-                            })
-                        )
-                    )
-                    .then(ClientCommandManager.literal("stable")
-                        .then(ClientCommandManager.argument("amount", IntegerArgumentType.integer(0))
-                            .executes(ctx -> {
-                                int amount = IntegerArgumentType.getInteger(ctx, "amount");
-                                if (amount == 0) {
-                                    PingEqualizerState.getInstance().setOff();
-                                    notifyStateChange("Ping Equalizer: Disabled.");
-                                } else {
-                                    PingEqualizerState.getInstance().setTotalPing(amount);
-                                    notifyStateChange("Ping Equalizer: Stabilizing ping to " + amount + "ms.");
-                                }
-                                cryptoHandler.triggerImmediateHeartbeatWithCooldown();
-                                return 1;
-                            })
-                        )
-                    )
-                    .then(ClientCommandManager.literal("status")
-                        .executes(ctx -> {
-                            String status = PingEqualizerState.getInstance().getStatusMessage();
-                            sendLocalMessage(status);
-                            return 1;
-                        })
-                    )
-                    .then(ClientCommandManager.literal("off")
-                        .executes(ctx -> {
-                            PingEqualizerState.getInstance().setOff();
-                            notifyStateChange("Ping Equalizer: Disabled.");
-                            cryptoHandler.triggerHeartbeatForCommand();
-                            return 1;
-                        })
-                    )
-                    .then(ClientCommandManager.literal("validate")
-                        .then(ClientCommandManager.argument("player", StringArgumentType.string())
-                            .suggests(onlinePlayerSuggestions)
-                            .executes(ctx -> {
-                                String input = StringArgumentType.getString(ctx, "player");
-                                UUID playerUuid = parseUuid(input);
+                    ClientCommandManager.literal("pingequalizer")
+                            .then(ClientCommandManager.literal("add")
+                                    .then(ClientCommandManager.argument("amount", IntegerArgumentType.integer(0))
+                                            .executes(ctx -> {
+                                                int amount = IntegerArgumentType.getInteger(ctx, "amount");
+                                                if (amount == 0) {
+                                                    PingEqualizerState.getInstance().setOff();
+                                                    notifyStateChange("Ping Equalizer: Disabled.");
+                                                } else {
+                                                    PingEqualizerState.getInstance().setAddPing(amount);
+                                                    notifyStateChange("Ping Equalizer: Added " + amount + "ms delay.");
+                                                }
+                                                cryptoHandler.triggerHeartbeatForCommand();
+                                                return 1;
+                                            })
+                                    )
+                            )
+                            .then(ClientCommandManager.literal("total")
+                                    .then(ClientCommandManager.argument("amount", IntegerArgumentType.integer(0))
+                                            .executes(ctx -> {
+                                                int amount = IntegerArgumentType.getInteger(ctx, "amount");
+                                                if (amount == 0) {
+                                                    PingEqualizerState.getInstance().setOff();
+                                                    notifyStateChange("Ping Equalizer: Disabled.");
+                                                } else {
+                                                    PingEqualizerState.getInstance().setTotalPing(amount);
+                                                    notifyStateChange("Ping Equalizer: Total ping set to " + amount + "ms.");
+                                                }
+                                                cryptoHandler.triggerHeartbeatForCommand();
+                                                return 1;
+                                            })
+                                    )
+                            )
+                            .then(ClientCommandManager.literal("status")
+                                    .executes(ctx -> {
+                                        String status = PingEqualizerState.getInstance().getStatusMessage();
+                                        sendLocalMessage(status);
+                                        return 1;
+                                    })
+                            )
+                            .then(ClientCommandManager.literal("off")
+                                    .executes(ctx -> {
+                                        PingEqualizerState.getInstance().setOff();
+                                        notifyStateChange("Ping Equalizer: Disabled.");
+                                        cryptoHandler.triggerHeartbeatForCommand();
+                                        return 1;
+                                    })
+                            )
+                            .then(ClientCommandManager.literal("validate")
+                                    .then(ClientCommandManager.argument("player", StringArgumentType.string())
+                                            .suggests(onlinePlayerSuggestions)
+                                            .executes(ctx -> {
+                                                String input = StringArgumentType.getString(ctx, "player");
+                                                UUID playerUuid = parseUuid(input);
 
-                                if (playerUuid != null) {
-                                    sendLocalMessage("Validating player with UUID: " + playerUuid);
-                                    cryptoHandler.validatePlayer(playerUuid)
-                                        .thenAccept(result -> {
-                                            MinecraftClient.getInstance().execute(() -> {
-                                                sendLocalMessage(formatValidationResult(result, input));
-                                            });
-                                        })
-                                        .exceptionally(ex -> {
-                                            MinecraftClient.getInstance().execute(() -> {
-                                                sendLocalMessage("Error validating player: " + ex.getMessage());
-                                            });
-                                            return null;
-                                        });
-                                } else {
-                                    sendLocalMessage("Validating player: " + input);
-                                    cryptoHandler.validatePlayer(input)
-                                        .thenAccept(result -> {
-                                            MinecraftClient.getInstance().execute(() -> {
-                                                sendLocalMessage(formatValidationResult(result, input));
-                                            });
-                                        })
-                                        .exceptionally(ex -> {
-                                            MinecraftClient.getInstance().execute(() -> {
-                                                sendLocalMessage("Error validating player: " + ex.getMessage());
-                                            });
-                                            return null;
-                                        });
-                                }
-                                return 1;
-                            })
-                        )
-                    )
+                                                if (playerUuid != null) {
+                                                    sendLocalMessage("Validating player with UUID: " + playerUuid);
+                                                    cryptoHandler.validatePlayer(playerUuid)
+                                                            .thenAccept(result -> {
+                                                                MinecraftClient.getInstance().execute(() -> {
+                                                                    sendLocalMessage(formatValidationResult(result, input));
+                                                                });
+                                                            })
+                                                            .exceptionally(ex -> {
+                                                                MinecraftClient.getInstance().execute(() -> {
+                                                                    sendLocalMessage("Error validating player: " + ex.getMessage());
+                                                                });
+                                                                return null;
+                                                            });
+                                                } else {
+                                                    sendLocalMessage("Validating player: " + input);
+                                                    cryptoHandler.validatePlayer(input)
+                                                            .thenAccept(result -> {
+                                                                MinecraftClient.getInstance().execute(() -> {
+                                                                    sendLocalMessage(formatValidationResult(result, input));
+                                                                });
+                                                            })
+                                                            .exceptionally(ex -> {
+                                                                MinecraftClient.getInstance().execute(() -> {
+                                                                    sendLocalMessage("Error validating player: " + ex.getMessage());
+                                                                });
+                                                                return null;
+                                                            });
+                                                }
+                                                return 1;
+                                            })
+                                    )
+                            )
             );
 
             dispatcher.register(ClientCommandManager.literal("pe").redirect(rootNode));
@@ -236,37 +220,37 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
         client.player.networkHandler.sendPacket(new ClientOptionsC2SPacket(forcedOptions));
 
         CompletableFuture.delayedExecutor(SPOOF_SEND_DELAY_MS, TimeUnit.MILLISECONDS).execute(() ->
-            client.execute(() -> {
-                if (client.player == null) {
-                    spoofInProgress = false;
-                    return;
-                }
-
-                client.player.networkHandler.sendChatMessage(next);
-
-                CompletableFuture.delayedExecutor(SPOOF_RESTORE_DELAY_MS, TimeUnit.MILLISECONDS).execute(() ->
-                    client.execute(() -> {
-                        if (client.player != null) {
-                            client.player.networkHandler.sendPacket(new ClientOptionsC2SPacket(originalOptions));
-                        }
+                client.execute(() -> {
+                    if (client.player == null) {
                         spoofInProgress = false;
-                        processPendingAnnouncements(client);
-                    })
-                );
-            })
+                        return;
+                    }
+
+                    client.player.networkHandler.sendChatMessage(next);
+
+                    CompletableFuture.delayedExecutor(SPOOF_RESTORE_DELAY_MS, TimeUnit.MILLISECONDS).execute(() ->
+                            client.execute(() -> {
+                                if (client.player != null) {
+                                    client.player.networkHandler.sendPacket(new ClientOptionsC2SPacket(originalOptions));
+                                }
+                                spoofInProgress = false;
+                                processPendingAnnouncements(client);
+                            })
+                    );
+                })
         );
     }
 
     private static SyncedClientOptions copyWithVisibility(SyncedClientOptions base, ChatVisibility visibility) {
         return new SyncedClientOptions(
-            base.language(),
-            base.viewDistance(),
-            visibility,
-            base.chatColorsEnabled(),
-            base.playerModelParts(),
-            base.mainArm(),
-            base.filtersText(),
-            base.allowsServerListing()
+                base.language(),
+                base.viewDistance(),
+                visibility,
+                base.chatColorsEnabled(),
+                base.playerModelParts(),
+                base.mainArm(),
+                base.filtersText(),
+                base.allowsServerListing()
         );
     }
 
@@ -293,10 +277,10 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
         if (input.length() == 32 && input.matches("[0-9a-fA-F]+")) {
             try {
                 String withDashes = input.substring(0, 8) + "-" +
-                                   input.substring(8, 12) + "-" +
-                                   input.substring(12, 16) + "-" +
-                                   input.substring(16, 20) + "-" +
-                                   input.substring(20, 32);
+                        input.substring(8, 12) + "-" +
+                        input.substring(12, 16) + "-" +
+                        input.substring(16, 20) + "-" +
+                        input.substring(20, 32);
                 return UUID.fromString(withDashes);
             } catch (IllegalArgumentException ignored) {
                 // Still not valid
@@ -343,7 +327,7 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
             return "§cUnable to reach validation server. Please try again later.";
         }
 
-        if (!result.isConnected()) {
+        if (!result.isConnected() && (result.username() == null || result.username().isEmpty())) {
             return "§cPlayer not found or has never connected.";
         }
 
@@ -359,20 +343,29 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
         StringBuilder sb = new StringBuilder();
         boolean modeActive = !result.peMode().equalsIgnoreCase("off") && !result.peMode().equalsIgnoreCase("unknown");
 
-        // Line 1: Player info with verification status
+        // If stale, only show username and last heartbeat
+        if (isStale) {
+            sb.append("§6Player: §f").append(result.username());
+            sb.append("\n§cNot connected. Last seen: ").append(formatHeartbeatAge(heartbeatAge));
+            return sb.toString();
+        }
+
+        // Line 1: Player info
         sb.append("§6Player: §f").append(result.username());
         // Only show server if mode is active (mod is actually running)
         if (modeActive && !result.currentServer().isEmpty()) {
             sb.append(" §7on §f").append(result.currentServer());
         }
-        // Add verification details on the same line
-        sb.append(" §7[Hash=").append(result.isHashCorrect() ? "§aOK" : "§cBAD");
+        sb.append("\n");
+
+        // Line 2: Verification details
+        sb.append("§7[Hash=").append(result.isHashCorrect() ? "§aOK" : "§cBAD");
         sb.append("§7, Signed=").append(result.modStatus().equalsIgnoreCase("signed") ? "§aYES" : "§cNO");
         sb.append("§7, SignatureValid=").append(result.isSignatureCorrect() ? "§aYES" : "§cNO");
         sb.append("§7]");
         sb.append("\n");
 
-        // Line 2: Status (mode, delay, ping info)
+        // Line 3: Status (mode, delay, ping info)
         String modeDisplay = formatMode(result.peMode());
         sb.append("§6Status: §f").append(modeDisplay);
         if (modeActive) {
@@ -382,16 +375,12 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
         }
         sb.append("\n");
 
-        // Line 3: Mod state description
+        // Line 4: Mod state description
         sb.append("§6Mod State: ");
-        if (isStale) {
-            sb.append("§cHeartbeat stale. Last seen: ").append(formatHeartbeatAge(heartbeatAge));
-        } else {
-            sb.append(getModStateDescription(result.isHashCorrect(), result.isSignatureCorrect(), result.modStatus()));
-        }
+        sb.append(getModStateDescription(result.isHashCorrect(), result.isSignatureCorrect(), result.modStatus()));
         sb.append("\n");
 
-        // Line 4: Last heartbeat
+        // Line 5: Last heartbeat
         sb.append("§7LastHeartbeat: ").append(formatHeartbeatAge(heartbeatAge));
 
         // If checking yourself, show all available information
@@ -445,16 +434,18 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
         StringBuilder sb = new StringBuilder();
         sb.append("§e⚠ Server unreachable - showing local values only\n");
 
-        // Line 1: Player info with verification details
+        // Line 1: Player info
         String username = client.getSession() != null ? client.getSession().getUsername() : "Unknown";
         sb.append("§6Player: §f").append(username);
         String currentServer = cryptoHandler != null ? cryptoHandler.getCurrentServer() : "";
         if (!currentServer.isEmpty()) {
             sb.append(" §7on §f").append(currentServer);
         }
-        // Add verification details on the same line
+        sb.append("\n");
+
+        // Line 2: Verification details
         boolean isSigned = cryptoHandler != null && cryptoHandler.canSign();
-        sb.append(" §7[Hash=§f").append(cryptoHandler != null ? "local" : "N/A");
+        sb.append("§7[Hash=§f").append(cryptoHandler != null ? "local" : "N/A");
         sb.append("§7, Signed=").append(isSigned ? "§aYES" : "§cNO");
         sb.append("§7, SignatureValid=§eN/A§7]");
         sb.append("\n");
