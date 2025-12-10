@@ -74,20 +74,13 @@ public class PingEqualizerChannelHandler extends ChannelDuplexHandler {
             return;
         }
 
-        if (packet instanceof QueryPingC2SPacket qp) {
-            PingEqualizerState.getInstance().onPingSent(qp.getStartTime());
-        }
-
         if (shouldBypassPacket(packet)) {
-            if (outboundQueue.isEmpty()) {
-                if (packet instanceof QueryPingC2SPacket qp) {
-                    PingEqualizerState.getInstance().onPingActuallySent(qp.getStartTime());
-                }
-                super.write(ctx, msg, promise);
-                return;
-            }
             queueOutbound(ctx, msg, promise, 0);
             return;
+        }
+
+        if (packet instanceof QueryPingC2SPacket qp) {
+            PingEqualizerState.getInstance().onPingSent(qp.getStartTime());
         }
 
         PingEqualizerState state = PingEqualizerState.getInstance();
@@ -180,15 +173,6 @@ public class PingEqualizerChannelHandler extends ChannelDuplexHandler {
         }
 
         if (shouldBypassPacket(packet)) {
-            if (inboundQueue.isEmpty()) {
-                if (packet instanceof PingResultS2CPacket pingResult) {
-                    PingEqualizerState state = PingEqualizerState.getInstance();
-                    state.onPingArrived(pingResult.startTime());
-                    state.handlePingResult(pingResult);
-                }
-                super.channelRead(ctx, msg);
-                return;
-            }
             queueInbound(ctx, msg, 0);
             return;
         }

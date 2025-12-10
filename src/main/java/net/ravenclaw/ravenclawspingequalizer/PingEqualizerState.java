@@ -66,14 +66,14 @@ public class PingEqualizerState {
         currentMode = Mode.ADD;
         addAmount = Math.max(0, amount);
         preciseDelay = addAmount;
-        // Ensure the applied delay is even so outbound/inbound halves are exactly equal
-        currentDelayMs = Math.round(Math.round(preciseDelay / 2.0) * 2.0);
+
+        currentDelayMs = (int) Math.round(preciseDelay);
     }
 
     public void setTotalPing(int target) {
         currentMode = Mode.TOTAL;
         totalTarget = Math.max(0, target);
-        // Reset preciseDelay to the initial guess to ensure rapid convergence upon mode switch
+
         int clientBasePing = getCalibratedBase();
         preciseDelay = Math.max(0, target - clientBasePing);
         updateDelay(MinecraftClient.getInstance());
@@ -96,7 +96,7 @@ public class PingEqualizerState {
         resetMatchSmoother();
         if (currentMode == Mode.ADD) {
             preciseDelay = addAmount;
-            currentDelayMs = Math.round(Math.round(preciseDelay / 2.0) * 2.0);
+            currentDelayMs = (int) Math.round(preciseDelay);
         }
     }
 
@@ -132,24 +132,19 @@ public class PingEqualizerState {
         }
 
         long now = Util.getMeasuringTimeMs();
-        long sendTime = p.actualSendTime > 0 ? p.actualSendTime : packet.startTime();
         long arriveTime = p.arrivalTime > 0 ? p.arrivalTime : now;
-        long measuredRtt = Math.max(0, arriveTime - sendTime);
 
+        long measuredRtt = Math.max(0, arriveTime - packet.startTime());
         lastMeasuredRtt = measuredRtt;
 
-        // Prefer the actual recorded outbound+inbound delays if available. Falling back to
-        // the originally scheduled appliedDelayMs helps when finer-grained measurements
-        // are not recorded by other parts of the system.
         long totalRecordedDelay = p.outboundDelayMs + p.inboundDelayMs;
         long totalAppliedForEstimate = totalRecordedDelay > 0 ? totalRecordedDelay : p.appliedDelayMs;
 
         long estimatedBase = Math.max(0, measuredRtt - totalAppliedForEstimate);
 
         lastValidBasePing = (int) estimatedBase;
-        // Increase smoothing alpha so base ping reacts faster to real changes. Previously
-        // the alpha was extremely small (0.05) which caused very slow convergence.
-        final double alpha = 0.20; // new sample weight
+
+        final double alpha = 0.12;
         smoothedBasePing = smoothedBasePing == 0
                 ? estimatedBase
                 : smoothedBasePing * (1.0 - alpha) + estimatedBase * alpha;
@@ -167,19 +162,12 @@ public class PingEqualizerState {
     }
 
     private boolean hasFreshBase(long now) {
-        // We consider the base ping valid for 250ms after the last sample.
         return lastValidBasePing > 0 && now - lastBasePingSampleTime <= BASE_PING_MAX_AGE_MS;
     }
 
     private int getCalibratedBase() {
-        // For TOTAL mode, we rely on the most recent raw measurement (lastValidBasePing)
-        // which includes the current smoothing/delay.
-        // For MATCH and other modes, we use the smoothed base ping for stability.
-        if (currentMode == Mode.TOTAL) {
-            // Use smoothed ping for target calculation to provide a stable base
-            return (int) Math.round(smoothedBasePing > 0 ? smoothedBasePing : lastValidBasePing);
-        }
-        return (int) Math.round(smoothedBasePing > 0 ? smoothedBasePing : lastValidBasePing);
+        double candidate = smoothedBasePing > 0 ? smoothedBasePing : lastValidBasePing;
+        return (int) Math.round(candidate);
     }
 
     private int computeTargetPing(ClientPlayNetworkHandler handler, int basePing) {
@@ -196,7 +184,6 @@ public class PingEqualizerState {
             return;
         }
         if (currentMode == Mode.ADD) {
-            // ensure even split in ADD mode as well
             currentDelayMs = Math.round(Math.round(preciseDelay / 2.0) * 2.0);
             return;
         }
@@ -225,16 +212,12 @@ public class PingEqualizerState {
             return;
         }
 
-        // The target delay is simply the difference between the target total ping and the estimated base ping.
-        // This is the correct, stable calculation for both TOTAL and MATCH modes.
         long targetDelay = Math.max(0, targetPing - basePing);
 
-        // --- Start of Unified Convergence Logic (used for TOTAL and MATCH) ---
         if (preciseDelay != targetDelay) {
             double diff = targetDelay - preciseDelay;
-            // Increase adjustment aggressiveness so the applied delay converges faster.
-            double maxStep = 25.0; // allow larger per-tick jumps for large differences
-            double step = diff * 0.25; // move a larger fraction of the remaining error each tick
+            double maxStep = 15.0; 
+            double step = diff * 0.18; 
 
             if (Math.abs(step) > maxStep) {
                 step = Math.signum(step) * maxStep;
@@ -242,15 +225,11 @@ public class PingEqualizerState {
 
             preciseDelay += step;
 
-            // Snap to target if very close
             if (Math.abs(targetDelay - preciseDelay) < 0.5) {
                 preciseDelay = targetDelay;
             }
         }
-        // --- End of Unified Convergence Logic ---
-
-        // round to nearest even so outbound/inbound portions are exactly equal
-        currentDelayMs = Math.round(Math.round(preciseDelay / 2.0) * 2.0);
+        currentDelayMs = (int) Math.round(preciseDelay);
     }
 
     private void requestPingIfNeeded(ClientPlayNetworkHandler handler, boolean force) {
