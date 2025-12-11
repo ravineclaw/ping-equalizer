@@ -40,6 +40,8 @@ public class PingEqualizerState {
     private double matchSmoothedTarget = -1;
     private long matchTargetLastUpdate = 0;
 
+    private long lastMeasuredRtt = -1;
+
     private static final class PendingPing {
         long appliedDelayMs;
         long actualSendTime = -1;
@@ -63,13 +65,17 @@ public class PingEqualizerState {
     public void setAddPing(int amount) {
         currentMode = Mode.ADD;
         addAmount = Math.max(0, amount);
-        currentDelayMs = addAmount;
         preciseDelay = addAmount;
+
+        currentDelayMs = (int) Math.round(preciseDelay);
     }
 
     public void setTotalPing(int target) {
         currentMode = Mode.TOTAL;
         totalTarget = Math.max(0, target);
+
+        int clientBasePing = getCalibratedBase();
+        preciseDelay = Math.max(0, target - clientBasePing);
         updateDelay(MinecraftClient.getInstance());
     }
 
@@ -89,8 +95,8 @@ public class PingEqualizerState {
         resetMeasurementState();
         resetMatchSmoother();
         if (currentMode == Mode.ADD) {
-            currentDelayMs = addAmount;
             preciseDelay = addAmount;
+            currentDelayMs = (int) Math.round(preciseDelay);
         }
     }
 
@@ -126,15 +132,22 @@ public class PingEqualizerState {
         }
 
         long now = Util.getMeasuringTimeMs();
-        long sendTime = p.actualSendTime > 0 ? p.actualSendTime : packet.startTime();
         long arriveTime = p.arrivalTime > 0 ? p.arrivalTime : now;
-        long measuredRtt = Math.max(0, arriveTime - sendTime);
-        long estimatedBase = Math.max(0, measuredRtt - (p.outboundDelayMs + p.inboundDelayMs));
+
+        long measuredRtt = Math.max(0, arriveTime - packet.startTime());
+        lastMeasuredRtt = measuredRtt;
+
+        long totalRecordedDelay = p.outboundDelayMs + p.inboundDelayMs;
+        long totalAppliedForEstimate = totalRecordedDelay > 0 ? totalRecordedDelay : p.appliedDelayMs;
+
+        long estimatedBase = Math.max(0, measuredRtt - totalAppliedForEstimate);
 
         lastValidBasePing = (int) estimatedBase;
+
+        final double alpha = 0.12;
         smoothedBasePing = smoothedBasePing == 0
-            ? estimatedBase
-            : smoothedBasePing * 0.95 + estimatedBase * 0.05;
+                ? estimatedBase
+                : smoothedBasePing * (1.0 - alpha) + estimatedBase * alpha;
         lastBasePingSampleTime = now;
         awaitingBasePing = false;
     }
@@ -153,7 +166,8 @@ public class PingEqualizerState {
     }
 
     private int getCalibratedBase() {
-        return (int) Math.round(smoothedBasePing > 0 ? smoothedBasePing : lastValidBasePing);
+        double candidate = smoothedBasePing > 0 ? smoothedBasePing : lastValidBasePing;
+        return (int) Math.round(candidate);
     }
 
     private int computeTargetPing(ClientPlayNetworkHandler handler, int basePing) {
@@ -170,7 +184,7 @@ public class PingEqualizerState {
             return;
         }
         if (currentMode == Mode.ADD) {
-            currentDelayMs = addAmount;
+            currentDelayMs = Math.round(Math.round(preciseDelay / 2.0) * 2.0);
             return;
         }
 
@@ -202,21 +216,20 @@ public class PingEqualizerState {
 
         if (preciseDelay != targetDelay) {
             double diff = targetDelay - preciseDelay;
-            double maxStep = 5.0;
-            double step = diff * 0.1;
+            double maxStep = 15.0;
+            double step = diff * 0.18;
 
             if (Math.abs(step) > maxStep) {
                 step = Math.signum(step) * maxStep;
             }
-            
+
             preciseDelay += step;
-            
+
             if (Math.abs(targetDelay - preciseDelay) < 0.5) {
                 preciseDelay = targetDelay;
             }
-            
-            currentDelayMs = (long) Math.round(preciseDelay);
         }
+        currentDelayMs = (int) Math.round(preciseDelay);
     }
 
     private void requestPingIfNeeded(ClientPlayNetworkHandler handler, boolean force) {
@@ -253,7 +266,8 @@ public class PingEqualizerState {
             return String.format("Ping Equalizer: %s | Measuring base ping...", modeStr);
         }
 
-        int base = lastValidBasePing;
+        // Use the estimated base ping for status message
+        int base = (int) Math.round(smoothedBasePing);
         int added = (int) currentDelayMs;
         int total = base + added;
         return String.format("Ping Equalizer: %s | Base: %dms | Added: %dms | Total: %dms", modeStr, base, added, total);
@@ -346,5 +360,6 @@ public class PingEqualizerState {
         lastValidBasePing = 0;
         smoothedBasePing = 0;
         lastBasePingSampleTime = 0;
+        lastMeasuredRtt = -1;
     }
 }
