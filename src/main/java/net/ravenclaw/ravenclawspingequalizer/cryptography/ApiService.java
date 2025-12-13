@@ -16,41 +16,83 @@ import com.google.gson.JsonParser;
 
 public final class ApiService {
 
-    private static final String API_BASE_URL = "http://localhost:3000";
+    private static final String DEFAULT_API_BASE_URL = "http://localhost:3000";
+    private static final String TUNNEL_URL_GIST_ID = "0de120a0cfc62d7a98f7b0c752602293";
+    private static final String TUNNEL_URL_GIST_FILENAME = "tunnel-url.txt";
+    private static final String TUNNEL_URL_GIST_API =
+        "https://api.github.com/gists/" + TUNNEL_URL_GIST_ID;
     private static final int TIMEOUT_MS = 10000;
+    private static final int MAX_REDIRECTS = 5;
+
+    private static volatile String apiBaseUrl = DEFAULT_API_BASE_URL;
+    private static volatile String cachedRemoteBaseUrl;
     private ApiService() {
+    }
+
+    public static String getApiBaseUrl() {
+        return apiBaseUrl;
+    }
+
+    public static void setApiBaseUrl(String baseUrl) {
+        String normalized = normalizeBaseUrl(baseUrl);
+        if (normalized != null) {
+            apiBaseUrl = normalized;
+        }
+    }
+
+    public static CompletableFuture<String> refreshApiBaseUrlFromGistAsync() {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                String text = loadTunnelUrlFromGist();
+                String normalized = normalizeBaseUrl(text);
+                if (normalized == null) {
+                    return null;
+                }
+                setApiBaseUrl(normalized);
+                cachedRemoteBaseUrl = normalized;
+                org.slf4j.LoggerFactory.getLogger("PingEqualizer")
+                    .info("API endpoint set to {}", normalized);
+                return normalized;
+            } catch (Exception e) {
+                org.slf4j.LoggerFactory.getLogger("PingEqualizer")
+                    .warn("Failed to load API endpoint from gist: {}", e.getMessage());
+                return null;
+            }
+        });
     }
 
     public static CompletableFuture<HashValidationResponse> validateModHash(String modHash) {
         return CompletableFuture.supplyAsync(() -> {
             try {
-                String url = API_BASE_URL + "/api/hash/" + URLEncoder.encode(modHash, StandardCharsets.UTF_8);
-                String response = httpGet(url);
+                String path = "/api/hash/" + URLEncoder.encode(modHash, StandardCharsets.UTF_8);
+                String response = httpGetApiPath(path);
 
                 if (response == null || response.isEmpty()) {
-                    return new HashValidationResponse(false, null);
+                    return new HashValidationResponse(false, null, null);
                 }
 
                 JsonObject json = JsonParser.parseString(response).getAsJsonObject();
                 boolean isValid = json.has("is_valid") && json.get("is_valid").getAsBoolean();
                 String signature = json.has("signature") ? json.get("signature").getAsString() : null;
+                String version = json.has("version") && !json.get("version").isJsonNull()
+                    ? json.get("version").getAsString()
+                    : null;
 
-                return new HashValidationResponse(isValid, signature);
+                return new HashValidationResponse(isValid, signature, version);
             } catch (Exception e) {
-                return new HashValidationResponse(false, null);
+                return new HashValidationResponse(false, null, null);
             }
         });
     }
 
-    public record HashValidationResponse(boolean isValid, String signature) {
+    public record HashValidationResponse(boolean isValid, String signature, String version) {
     }
 
     public static CompletableFuture<Boolean> sendHeartbeat(HeartbeatPayload payload) {
         return CompletableFuture.supplyAsync(() -> {
             try {
-                String url = API_BASE_URL + "/api/heartbeat";
                 String jsonPayload = toHeartbeatJson(payload);
-                String response = httpPost(url, jsonPayload);
+                String response = httpPostApiPath("/api/heartbeat", jsonPayload);
 
                 if (response == null || response.isEmpty()) {
                     return false;
@@ -74,6 +116,7 @@ public final class ApiService {
         appendJsonNumber(sb, "timestamp", payload.timestamp());
         appendJsonString(sb, "currentServer", payload.currentServer());
         appendJsonString(sb, "modStatus", payload.modStatus());
+        appendJsonString(sb, "modVersion", payload.modVersion());
         appendJsonString(sb, "minecraftProof", payload.minecraftProof());
         appendJsonString(sb, "serverId", payload.serverId());
         appendJsonString(sb, "signature", payload.signature());
@@ -140,8 +183,7 @@ public final class ApiService {
     public static CompletableFuture<PlayerValidationResult> validatePlayerByUuid(UUID playerUuid) {
         return CompletableFuture.supplyAsync(() -> {
             try {
-                String url = API_BASE_URL + "/api/validate/" + playerUuid.toString();
-                String response = httpGet(url);
+                String response = httpGetApiPath("/api/validate/" + playerUuid);
                 if (response == null) {
                     // 404 - player not found but server is reachable
                     return PlayerValidationResult.invalid();
@@ -160,8 +202,7 @@ public final class ApiService {
     public static CompletableFuture<PlayerValidationResult> validatePlayerByUsername(String username) {
         return CompletableFuture.supplyAsync(() -> {
             try {
-                String url = API_BASE_URL + "/api/validate/" + URLEncoder.encode(username, StandardCharsets.UTF_8);
-                String response = httpGet(url);
+                String response = httpGetApiPath("/api/validate/" + URLEncoder.encode(username, StandardCharsets.UTF_8));
                 if (response == null) {
                     // 404 - player not found but server is reachable
                     return PlayerValidationResult.invalid();
@@ -202,6 +243,7 @@ public final class ApiService {
             int peDelay = json.has("pe_delay") ? json.get("pe_delay").getAsInt() : 0;
             int peBasePing = json.has("pe_base_ping") ? json.get("pe_base_ping").getAsInt() : 0;
             int peTotalPing = json.has("pe_total_ping") ? json.get("pe_total_ping").getAsInt() : 0;
+            String modVersion = json.has("mod_version") ? json.get("mod_version").getAsString() : "";
 
             return new PlayerValidationResult(
                 isConnected,
@@ -216,6 +258,7 @@ public final class ApiService {
                 peDelay,
                 peBasePing,
                 peTotalPing,
+                modVersion,
                 false
             );
         } catch (Exception e) {
@@ -237,6 +280,7 @@ public final class ApiService {
         int peDelay,
         int peBasePing,
         int peTotalPing,
+        String modVersion,
         boolean serverUnreachable
     ) {
         public boolean isValid() {
@@ -252,37 +296,114 @@ public final class ApiService {
         }
 
         public static PlayerValidationResult invalid() {
-            return new PlayerValidationResult(false, false, false, "unknown", "", "", "", 0, "unknown", 0, 0, 0, false);
+            return new PlayerValidationResult(false, false, false, "unknown", "", "", "", 0, "unknown", 0, 0, 0, "", false);
         }
 
         public static PlayerValidationResult unreachable() {
-            return new PlayerValidationResult(false, false, false, "unknown", "", "", "", 0, "unknown", 0, 0, 0, true);
+            return new PlayerValidationResult(false, false, false, "unknown", "", "", "", 0, "unknown", 0, 0, 0, "", true);
         }
     }
 
-    private static String httpGet(String urlString) throws IOException {
-        URL url = URI.create(urlString).toURL();
-        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-        conn.setRequestMethod("GET");
-        conn.setConnectTimeout(TIMEOUT_MS);
-        conn.setReadTimeout(TIMEOUT_MS);
-        conn.setRequestProperty("User-Agent", "RavenclawsPingEqualizer/1.0");
-        conn.setRequestProperty("Accept", "application/json");
+    private static String httpGetApiPath(String path) throws IOException {
+        String currentBase = getApiBaseUrl();
+        try {
+            return httpGet(currentBase + path);
+        } catch (IOException first) {
+            String alternateBase = resolveAlternateBaseUrl(currentBase);
+            if (alternateBase == null || alternateBase.equals(currentBase)) {
+                throw first;
+            }
+            try {
+                String response = httpGet(alternateBase + path);
+                setApiBaseUrl(alternateBase);
+                return response;
+            } catch (IOException ignored) {
+                throw first;
+            }
+        }
+    }
 
-        int responseCode = conn.getResponseCode();
-        if (responseCode == 404) {
-            // Player not found - return null to indicate invalid (but server is reachable)
+    private static String httpPostApiPath(String path, String jsonPayload) throws IOException {
+        String currentBase = getApiBaseUrl();
+        try {
+            return httpPost(currentBase + path, jsonPayload);
+        } catch (IOException first) {
+            String alternateBase = resolveAlternateBaseUrl(currentBase);
+            if (alternateBase == null || alternateBase.equals(currentBase)) {
+                throw first;
+            }
+            try {
+                String response = httpPost(alternateBase + path, jsonPayload);
+                setApiBaseUrl(alternateBase);
+                return response;
+            } catch (IOException ignored) {
+                throw first;
+            }
+        }
+    }
+
+    private static String loadTunnelUrlFromGist() throws IOException {
+        String gistJson = httpGetText(TUNNEL_URL_GIST_API, "application/vnd.github+json");
+        if (gistJson == null || gistJson.isBlank()) {
             return null;
         }
-        if (responseCode != 200) {
-            // Other non-200 codes indicate server issues
-            throw new IOException("Unexpected response code: " + responseCode);
+
+        JsonObject gist = JsonParser.parseString(gistJson).getAsJsonObject();
+        if (!gist.has("files") || !gist.get("files").isJsonObject()) {
+            return null;
         }
 
-        try (Scanner scanner = new Scanner(conn.getInputStream(), StandardCharsets.UTF_8)) {
-            scanner.useDelimiter("\\A");
-            return scanner.hasNext() ? scanner.next() : "";
+        JsonObject files = gist.getAsJsonObject("files");
+        if (!files.has(TUNNEL_URL_GIST_FILENAME) || !files.get(TUNNEL_URL_GIST_FILENAME).isJsonObject()) {
+            return null;
         }
+
+        JsonObject file = files.getAsJsonObject(TUNNEL_URL_GIST_FILENAME);
+        if (file.has("content") && !file.get("content").isJsonNull()) {
+            String content = file.get("content").getAsString();
+            if (content != null && !content.isBlank()) {
+                return content;
+            }
+        }
+
+        if (file.has("raw_url") && !file.get("raw_url").isJsonNull()) {
+            String rawUrl = file.get("raw_url").getAsString();
+            if (rawUrl != null && !rawUrl.isBlank()) {
+                return httpGetText(rawUrl, "text/plain,*/*");
+            }
+        }
+
+        return null;
+    }
+
+    private static String resolveAlternateBaseUrl(String currentBaseUrl) {
+        if (currentBaseUrl == null) {
+            return null;
+        }
+
+        if (!DEFAULT_API_BASE_URL.equals(currentBaseUrl)) {
+            return DEFAULT_API_BASE_URL;
+        }
+
+        String cached = cachedRemoteBaseUrl;
+        if (cached != null && !cached.isBlank() && !DEFAULT_API_BASE_URL.equals(cached)) {
+            return cached;
+        }
+
+        try {
+            String remote = normalizeBaseUrl(loadTunnelUrlFromGist());
+            if (remote != null && !DEFAULT_API_BASE_URL.equals(remote)) {
+                cachedRemoteBaseUrl = remote;
+                return remote;
+            }
+        } catch (Exception ignored) {
+        }
+
+        return null;
+    }
+
+    private static String httpGet(String urlString) throws IOException {
+        return httpGetText(urlString, "application/json");
     }
 
     private static String httpPost(String urlString, String jsonPayload) throws IOException {
@@ -293,6 +414,7 @@ public final class ApiService {
         conn.setReadTimeout(TIMEOUT_MS);
         conn.setDoOutput(true);
         conn.setRequestProperty("User-Agent", "RavenclawsPingEqualizer/1.0");
+        conn.setRequestProperty("Accept-Encoding", "identity");
         conn.setRequestProperty("Content-Type", "application/json");
         conn.setRequestProperty("Accept", "application/json");
 
@@ -302,7 +424,7 @@ public final class ApiService {
 
         int responseCode = conn.getResponseCode();
         if (responseCode != 200) {
-            return null;
+            throw new IOException("Unexpected response code: " + responseCode);
         }
 
         try (Scanner scanner = new Scanner(conn.getInputStream(), StandardCharsets.UTF_8)) {
@@ -310,7 +432,74 @@ public final class ApiService {
             return scanner.hasNext() ? scanner.next() : "";
         }
     }
+
+    private static String httpGetText(String urlString, String acceptHeader) throws IOException {
+        URI current = URI.create(urlString);
+        for (int redirectCount = 0; redirectCount < MAX_REDIRECTS; redirectCount++) {
+            URL url = current.toURL();
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setInstanceFollowRedirects(false);
+            conn.setRequestMethod("GET");
+            conn.setConnectTimeout(TIMEOUT_MS);
+            conn.setReadTimeout(TIMEOUT_MS);
+            conn.setRequestProperty("User-Agent", "RavenclawsPingEqualizer/1.0");
+            conn.setRequestProperty("Accept-Encoding", "identity");
+            conn.setRequestProperty("Accept", acceptHeader);
+
+            int responseCode = conn.getResponseCode();
+            if (responseCode == 404) {
+                return null;
+            }
+            if (responseCode == 301 || responseCode == 302 || responseCode == 303 || responseCode == 307 || responseCode == 308) {
+                String location = conn.getHeaderField("Location");
+                if (location == null || location.isBlank()) {
+                    throw new IOException("Redirect without Location");
+                }
+                current = current.resolve(location);
+                continue;
+            }
+            if (responseCode != 200) {
+                throw new IOException("Unexpected response code: " + responseCode);
+            }
+
+            try (Scanner scanner = new Scanner(conn.getInputStream(), StandardCharsets.UTF_8)) {
+                scanner.useDelimiter("\\A");
+                return scanner.hasNext() ? scanner.next() : "";
+            }
+        }
+        throw new IOException("Too many redirects");
+    }
+
+    private static String normalizeBaseUrl(String baseUrl) {
+        if (baseUrl == null) {
+            return null;
+        }
+        String candidate = baseUrl.trim();
+        if (candidate.isEmpty()) {
+            return null;
+        }
+        while (candidate.endsWith("/")) {
+            candidate = candidate.substring(0, candidate.length() - 1);
+        }
+
+        URI uri;
+        try {
+            uri = URI.create(candidate);
+        } catch (Exception e) {
+            return null;
+        }
+
+        String scheme = uri.getScheme();
+        if (scheme == null) {
+            return null;
+        }
+        String lowerScheme = scheme.toLowerCase();
+        if (!lowerScheme.equals("http") && !lowerScheme.equals("https")) {
+            return null;
+        }
+        if (uri.getHost() == null && uri.getAuthority() == null) {
+            return null;
+        }
+        return candidate;
+    }
 }
-
-
-

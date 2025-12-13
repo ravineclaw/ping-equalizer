@@ -24,6 +24,7 @@ import net.minecraft.network.packet.c2s.common.ClientOptionsC2SPacket;
 import net.minecraft.network.packet.c2s.common.SyncedClientOptions;
 import net.minecraft.text.Text;
 import net.ravenclaw.ravenclawspingequalizer.PingEqualizerState;
+import net.ravenclaw.ravenclawspingequalizer.cryptography.ApiService;
 import net.ravenclaw.ravenclawspingequalizer.cryptography.CryptoHandler;
 
 public class RavenclawsPingEqualizerClient implements ClientModInitializer {
@@ -40,6 +41,7 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
 
     @Override
     public void onInitializeClient() {
+        ApiService.refreshApiBaseUrlFromGistAsync();
         cryptoHandler = new CryptoHandler();
 
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
@@ -266,14 +268,11 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
             return null;
         }
 
-        // Try standard UUID format with dashes
         try {
             return UUID.fromString(input);
         } catch (IllegalArgumentException ignored) {
-            // Not a standard UUID format
         }
 
-        // Try UUID without dashes (32 hex characters)
         if (input.length() == 32 && input.matches("[0-9a-fA-F]+")) {
             try {
                 String withDashes = input.substring(0, 8) + "-" +
@@ -283,26 +282,21 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                         input.substring(20, 32);
                 return UUID.fromString(withDashes);
             } catch (IllegalArgumentException ignored) {
-                // Still not valid
             }
         }
 
-        // Not a UUID, treat as username
         return null;
     }
 
     private String formatValidationResult(net.ravenclaw.ravenclawspingequalizer.cryptography.ApiService.PlayerValidationResult result, String input) {
         MinecraftClient client = MinecraftClient.getInstance();
-        // Check if it's self from the result username, OR from the input if result is empty
         boolean isSelf = false;
         if (client != null && client.getSession() != null) {
             String selfUsername = client.getSession().getUsername();
             UUID selfUuid = client.getSession().getUuidOrNull();
-            // Check from result
             if (!result.username().isEmpty() && result.username().equalsIgnoreCase(selfUsername)) {
                 isSelf = true;
             }
-            // Check from input if result is empty (server unreachable)
             if (result.username().isEmpty() && input != null) {
                 if (input.equalsIgnoreCase(selfUsername)) {
                     isSelf = true;
@@ -318,78 +312,54 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
     }
 
     private String formatValidationResult(net.ravenclaw.ravenclawspingequalizer.cryptography.ApiService.PlayerValidationResult result, boolean isSelf) {
-        // Handle server unreachable case
         if (result.isServerUnreachable()) {
-            if (isSelf) {
-                // Fall back to client-side values when validating yourself
-                return formatClientSideFallback();
-            }
-            return "§cUnable to reach validation server. Please try again later.";
+            return isSelf ? formatClientSideFallback() : "\u00A7cUnable to reach validation server. Please try again later.";
         }
 
         if (!result.isConnected() && (result.username() == null || result.username().isEmpty())) {
-            return "§cPlayer not found or has never connected.";
+            return "\u00A7cPlayer not found or has never connected.";
         }
 
-        // Check if heartbeat is stale (over 40 seconds ago)
         long now = System.currentTimeMillis();
         long heartbeatAge = now - result.lastHeartbeat();
         boolean isStale = heartbeatAge > 40000;
 
-        if (isStale && !isSelf) {
-            return "§cPlayer is not currently connected. Last seen: " + formatHeartbeatAge(heartbeatAge);
+        if (isStale) {
+            return "\u00A7cPlayer is not currently connected. Last seen: " + formatHeartbeatAge(heartbeatAge);
         }
 
         StringBuilder sb = new StringBuilder();
         boolean modeActive = !result.peMode().equalsIgnoreCase("off") && !result.peMode().equalsIgnoreCase("unknown");
 
-        // If stale, only show username and last heartbeat
-        if (isStale) {
-            sb.append("§6Player: §f").append(result.username());
-            sb.append("\n§cNot connected. Last seen: ").append(formatHeartbeatAge(heartbeatAge));
-            return sb.toString();
-        }
-
-        // Line 1: Player info
-        sb.append("§6Player: §f").append(result.username());
-        // Only show server if mode is active (mod is actually running)
+        sb.append("\u00A76Player: \u00A7f").append(result.username());
         if (modeActive && !result.currentServer().isEmpty()) {
-            sb.append(" §7on §f").append(result.currentServer());
+            sb.append(" \u00A77on \u00A7f").append(result.currentServer());
         }
         sb.append("\n");
 
-        // Line 2: Verification details
-        sb.append("§7[Hash=").append(result.isHashCorrect() ? "§aOK" : "§cBAD");
-        sb.append("§7, Signed=").append(result.modStatus().equalsIgnoreCase("signed") ? "§aYES" : "§cNO");
-        sb.append("§7, SignatureValid=").append(result.isSignatureCorrect() ? "§aYES" : "§cNO");
-        sb.append("§7]");
+        sb.append("\u00A76Mod Version: \u00A7f").append(result.modVersion().isEmpty() ? "unknown" : result.modVersion());
         sb.append("\n");
 
-        // Line 3: Status (mode, delay, ping info)
+        sb.append("\u00A77[Hash=").append(result.isHashCorrect() ? "\u00A7aOK" : "\u00A7cBAD");
+        sb.append("\u00A77, Signed=").append(result.modStatus().equalsIgnoreCase("signed") ? "\u00A7aYES" : "\u00A7cNO");
+        sb.append("\u00A77, SignatureValid=").append(result.isSignatureCorrect() ? "\u00A7aYES" : "\u00A7cNO");
+        sb.append("\u00A77]");
+        sb.append("\n");
+
         String modeDisplay = formatMode(result.peMode());
-        sb.append("§6Status: §f").append(modeDisplay);
+        sb.append("\u00A76Status: \u00A7f").append(modeDisplay);
         if (modeActive) {
-            sb.append(" §7| Delay: §f").append(result.peDelay()).append("ms");
-            sb.append(" §7| Base: §f").append(result.peBasePing()).append("ms");
-            sb.append(" §7| Total: §f").append(result.peTotalPing()).append("ms");
+            sb.append(" \u00A77| Delay: \u00A7f").append(result.peDelay()).append("ms");
+            sb.append(" \u00A77| Base: \u00A7f").append(result.peBasePing()).append("ms");
+            sb.append(" \u00A77| Total: \u00A7f").append(result.peTotalPing()).append("ms");
         }
         sb.append("\n");
 
-        // Line 4: Mod state description
-        sb.append("§6Mod State: ");
+        sb.append("\u00A76Mod State: ");
         sb.append(getModStateDescription(result.isHashCorrect(), result.isSignatureCorrect(), result.modStatus()));
         sb.append("\n");
 
-        // Line 5: Last heartbeat
-        sb.append("§7LastHeartbeat: ").append(formatHeartbeatAge(heartbeatAge));
-
-        // If checking yourself, show all available information
-        if (isSelf) {
-            sb.append("\n§7UUID: §f").append(result.uuid());
-            if (!result.currentServer().isEmpty()) {
-                sb.append("\n§7Server: §f").append(result.currentServer());
-            }
-        }
+        sb.append("\u00A77LastHeartbeat: ").append(formatHeartbeatAge(heartbeatAge));
 
         return sb.toString();
     }
@@ -407,23 +377,23 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
     private String formatHeartbeatAge(long ageMs) {
         long seconds = ageMs / 1000;
         if (seconds < 60) {
-            return (seconds <= 40 ? "§a" : "§c") + seconds + "s ago";
+            return (seconds <= 40 ? "\u00A7a" : "\u00A7c") + seconds + "s ago";
         }
         long minutes = seconds / 60;
-        return "§c" + minutes + "m ago";
+        return "\u00A7c" + minutes + "m ago";
     }
 
     private String getModStateDescription(boolean hashCorrect, boolean signatureCorrect, String modStatus) {
         if (hashCorrect && signatureCorrect) {
-            return "§aFully validated.";
+            return "\u00A7aFully validated.";
         } else if (hashCorrect && modStatus.equalsIgnoreCase("unsigned")) {
-            return "§cSignature missing. The mod is not cryptographically verified.";
+            return "\u00A7cSignature missing. The mod is not cryptographically verified.";
         } else if (hashCorrect && !signatureCorrect) {
-            return "§cSignature verification failed. The status cannot be trusted.";
+            return "\u00A7cSignature verification failed. The status cannot be trusted.";
         } else if (!hashCorrect && signatureCorrect) {
-            return "§cMod hash mismatch with valid signature. Private key is compromised.";
+            return "\u00A7cMod hash mismatch with valid signature. Private key is compromised.";
         } else {
-            return "§cModified mod with no valid signature. Status cannot be trusted.";
+            return "\u00A7cModified mod with no valid signature. Status cannot be trusted.";
         }
     }
 
@@ -432,51 +402,41 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
         PingEqualizerState peState = PingEqualizerState.getInstance();
 
         StringBuilder sb = new StringBuilder();
-        sb.append("§e⚠ Server unreachable - showing local values only\n");
+        sb.append("\u00A7eServer unreachable - showing local values only\n");
 
-        // Line 1: Player info
         String username = client.getSession() != null ? client.getSession().getUsername() : "Unknown";
-        sb.append("§6Player: §f").append(username);
+        sb.append("\u00A76Player: \u00A7f").append(username);
         String currentServer = cryptoHandler != null ? cryptoHandler.getCurrentServer() : "";
         if (!currentServer.isEmpty()) {
-            sb.append(" §7on §f").append(currentServer);
+            sb.append(" \u00A77on \u00A7f").append(currentServer);
         }
         sb.append("\n");
 
-        // Line 2: Verification details
         boolean isSigned = cryptoHandler != null && cryptoHandler.canSign();
-        sb.append("§7[Hash=§f").append(cryptoHandler != null ? "local" : "N/A");
-        sb.append("§7, Signed=").append(isSigned ? "§aYES" : "§cNO");
-        sb.append("§7, SignatureValid=§eN/A§7]");
+        sb.append("\u00A77[Hash=\u00A7f").append(cryptoHandler != null ? "local" : "N/A");
+        sb.append("\u00A77, Signed=").append(isSigned ? "\u00A7aYES" : "\u00A7cNO");
+        sb.append("\u00A77, SignatureValid=\u00A7eN/A\u00A77]");
         sb.append("\n");
 
-        // Line 2: Status (mode, delay, ping info)
         String modeDisplay = formatMode(peState.getMode().name());
         boolean modeActive = peState.getMode() != PingEqualizerState.Mode.OFF;
-        sb.append("§6Status: §f").append(modeDisplay);
+        sb.append("\u00A76Status: \u00A7f").append(modeDisplay);
         if (modeActive) {
-            sb.append(" §7| Delay: §f").append(peState.getCurrentDelayMs()).append("ms");
-            sb.append(" §7| Base: §f").append(peState.getBasePing()).append("ms");
-            sb.append(" §7| Total: §f").append(peState.getTotalPing()).append("ms");
+            sb.append(" \u00A77| Delay: \u00A7f").append(peState.getCurrentDelayMs()).append("ms");
+            sb.append(" \u00A77| Base: \u00A7f").append(peState.getBasePing()).append("ms");
+            sb.append(" \u00A77| Total: \u00A7f").append(peState.getTotalPing()).append("ms");
         }
         sb.append("\n");
 
-        // Line 3: Mod state (local info only)
-        sb.append("§6Mod State: ");
+        sb.append("\u00A76Mod State: ");
         if (isSigned) {
-            sb.append("§aLocally validated (signed)");
+            sb.append("\u00A7aLocally validated (signed)");
         } else {
-            sb.append("§eLocally running (unsigned)");
+            sb.append("\u00A7eLocally running (unsigned)");
         }
         sb.append("\n");
 
-        // Line 4: Last heartbeat info
-        sb.append("§7LastHeartbeat: §eUnable to verify");
-
-        // UUID info
-        if (client.getSession() != null && client.getSession().getUuidOrNull() != null) {
-            sb.append("\n§7UUID: §f").append(client.getSession().getUuidOrNull());
-        }
+        sb.append("\u00A77LastHeartbeat: \u00A7eUnable to verify");
 
         return sb.toString();
     }

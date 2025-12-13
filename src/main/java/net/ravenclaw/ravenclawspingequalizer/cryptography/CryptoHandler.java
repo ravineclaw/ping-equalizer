@@ -10,6 +10,8 @@ import java.util.concurrent.CompletableFuture;
 
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.session.Session;
+import net.fabricmc.loader.api.FabricLoader;
+import java.util.Locale;
 
 public class CryptoHandler {
 
@@ -27,10 +29,14 @@ public class CryptoHandler {
     private String reconstructedKey;
     private final String modHash;
     private boolean canSign = false;
+    private volatile PrivateKey signingKey;
     private long tickCount = 0;
     private boolean isValidated = false;
     private PlayerAttestation currentAttestation;
     private String currentServerAddress = "";
+    private final String modVersion;
+    private volatile boolean isHashApproved = false;
+    private volatile boolean hashApprovalInProgress = false;
 
     // Rate limiting state
     private final Deque<Long> heartbeatTimestamps = new ArrayDeque<>();
@@ -38,25 +44,58 @@ public class CryptoHandler {
     private long spamCooldownUntil = 0;
 
     public CryptoHandler() {
-        modHash = CryptoUtils.bytesToHex(CryptoUtils.calculateModHash());
-        initializeAsync();
+        modHash = CryptoUtils.bytesToHex(CryptoUtils.calculateModHash()).toUpperCase(Locale.ROOT);
+        modVersion = resolveModVersion();
+        validateHashAsync();
     }
 
-    private void initializeAsync() {
+    private void initializeSigningKey() {
+        String candidate = "";
+        try {
+            candidate = PrivateKeyReconstructor.reconstructPrivateKey();
+        } catch (Exception ignored) {
+        }
+
+        reconstructedKey = candidate != null ? candidate : "";
+        if (reconstructedKey.isEmpty()) {
+            canSign = false;
+            signingKey = null;
+            return;
+        }
+
+        try {
+            signingKey = CryptoUtils.parsePrivateKeyFromPEM(reconstructedKey);
+            canSign = signingKey != null;
+        } catch (GeneralSecurityException e) {
+            signingKey = null;
+            canSign = false;
+            reconstructedKey = "";
+        }
+    }
+
+    private void validateHashAsync() {
+        if (hashApprovalInProgress || isHashApproved) {
+            return;
+        }
+        hashApprovalInProgress = true;
         ApiService.validateModHash(modHash)
             .thenAccept(response -> {
-                if (response.isValid() && response.signature() != null) {
-                    boolean signatureValid = CryptoUtils.verifyServerSignature(modHash, response.signature());
-                    canSign = signatureValid;
-                    reconstructedKey = canSign ? PrivateKeyReconstructor.reconstructPrivateKey() : "";
-                } else {
-                    canSign = false;
-                    reconstructedKey = "";
+                boolean signatureValid = response.signature() != null &&
+                    CryptoUtils.verifyServerSignature(modHash, response.signature());
+                boolean versionOk = response.version() == null ||
+                    response.version().isBlank() ||
+                    response.version().equalsIgnoreCase("unknown") ||
+                    response.version().equals(modVersion);
+                boolean approved = response.isValid() && signatureValid && versionOk;
+                isHashApproved = approved;
+                hashApprovalInProgress = false;
+                if (approved) {
+                    initializeSigningKey();
                 }
             })
             .exceptionally(ex -> {
-                canSign = false;
-                reconstructedKey = "";
+                isHashApproved = false;
+                hashApprovalInProgress = false;
                 return null;
             });
     }
@@ -140,16 +179,30 @@ public class CryptoHandler {
             return;
         }
 
+        if (!isHashApproved) {
+            isValidated = false;
+            validateHashAsync();
+            return;
+        }
+
         // 1. Generate timestamp ONCE
         long timestamp = System.currentTimeMillis();
 
-        String signature = null;
-        if (canSign && reconstructedKey != null && !reconstructedKey.isEmpty()) {
-            // 2. Pass timestamp to signing method
-            signature = createAndSignHeartbeatPayload(timestamp);
+        // Heartbeats must be signed; if we can't sign, skip to avoid spamming failed heartbeats.
+        if (!canSign || signingKey == null) {
+            isValidated = false;
+            return;
         }
 
-        String modStatus = canSign ? "signed" : "unsigned";
+        // 2. Pass timestamp to signing method
+        String signature = createAndSignHeartbeatPayload(timestamp);
+        if (signature == null || signature.isEmpty()) {
+            isValidated = false;
+            return;
+        }
+
+        String modStatus = "signed";
+        String version = modVersion;
 
         net.ravenclaw.ravenclawspingequalizer.PingEqualizerState peState =
                 net.ravenclaw.ravenclawspingequalizer.PingEqualizerState.getInstance();
@@ -164,6 +217,7 @@ public class CryptoHandler {
                 currentAttestation,
                 currentServerAddress,
                 modStatus,
+                version,
                 signature,
                 peMode,
                 peDelay,
@@ -185,16 +239,21 @@ public class CryptoHandler {
         StringBuilder payload = new StringBuilder();
         payload.append(modHash);
         payload.append("|");
+        payload.append(modVersion);
+        payload.append("|");
         payload.append(currentAttestation.getPlayerUuid());
         payload.append("|");
         payload.append(currentAttestation.getServerId());
         payload.append("|");
         payload.append(timestamp); // <--- Use the passed timestamp
 
+        PrivateKey key = signingKey;
+        if (key == null) {
+            return null;
+        }
         try {
-            PrivateKey privateKey = CryptoUtils.parsePrivateKeyFromPEM(reconstructedKey);
-            return CryptoUtils.signPayload(payload.toString().getBytes(StandardCharsets.UTF_8), privateKey);
-        } catch (GeneralSecurityException e) {
+            return CryptoUtils.signPayload(payload.toString().getBytes(StandardCharsets.UTF_8), key);
+        } catch (RuntimeException e) {
             return null;
         }
     }
@@ -205,6 +264,13 @@ public class CryptoHandler {
             serverId.append(String.format("%x", (int) (Math.random() * 16)));
         }
         return serverId.toString();
+    }
+
+    private String resolveModVersion() {
+        return FabricLoader.getInstance()
+                .getModContainer("ravenclawspingequalizer")
+                .map(c -> c.getMetadata().getVersion().getFriendlyString())
+                .orElse("unknown");
     }
 
     public void setCurrentServer(String serverAddress) {
@@ -358,11 +424,15 @@ public class CryptoHandler {
     }
 
     public boolean hasValidKey() {
-        return canSign && reconstructedKey != null && !reconstructedKey.isEmpty();
+        return canSign && signingKey != null;
     }
 
     public String getModHash() {
         return modHash;
+    }
+
+    public boolean isHashApproved() {
+        return isHashApproved;
     }
 
     public PlayerAttestation getCurrentAttestation() {
@@ -377,8 +447,3 @@ public class CryptoHandler {
         return this.reconstructedKey;
     }
 }
-
-
-
-
-

@@ -83,15 +83,16 @@ task generatePrivateKey {
         }
 
         // Split into 32 shards with advanced obfuscation
+        int realShardCount = 32
         def shards = []
-        def chunkSize = (int) Math.ceil(privateKey.length() / 32.0)
+        def chunkSize = (int) Math.ceil(privateKey.length() / (double) realShardCount)
         
         // Rotation keys for advanced obfuscation (same as in PrivateKeyReconstructor)
         def rotationKeys = [0x5A, 0x3C, 0x7B, 0x1E, 0x4F, 0x9D, 0x2B, 0x8C,
                            0x6E, 0xA1, 0x3F, 0xD2, 0x59, 0x87, 0xC3, 0x14] as int[]
         int rotKeyLen = rotationKeys.size()
         
-        for (int i = 0; i < 32; i++) {
+        for (int i = 0; i < realShardCount; i++) {
             int start = i * chunkSize
             int end = Math.min(start + chunkSize, privateKey.length())
             String chunk = (start < end) ? privateKey.substring(start, end) : ""
@@ -109,13 +110,46 @@ task generatePrivateKey {
                 int charInt = (int) chars[j]
                 chars[j] = (char) (charInt ^ rotationKeys[keyIndex])
             }
+
+            // Preserve raw byte values to keep obfuscation reversible
+            byte[] shardBytes = new byte[chars.length]
+            for (int k = 0; k < chars.length; k++) {
+                shardBytes[k] = (byte) chars[k]
+            }
             
-            shards.add(new String(chars))
+            shards.add(shardBytes)
         }
 
+        // Deterministic shuffle order derived from the key material
+        // Use a deterministic seed derived only from the key material so shard order is stable
+        def rng = new java.util.Random(
+                java.util.Arrays.hashCode(privateKey.getBytes('UTF-8')))
+        def indices = (0..<realShardCount).toList()
+        java.util.Collections.shuffle(indices, rng)
+        def permuted = []
+        indices.each { permuted.add(shards[it]) }
+
+        // Add decoy shards to increase noise
+        int decoyCount = 12
+        def secureRandom = java.security.SecureRandom.getInstanceStrong()
+        for (int i = 0; i < decoyCount; i++) {
+            byte[] noise = new byte[Math.max(chunkSize, 4)]
+            secureRandom.nextBytes(noise)
+            permuted.add(noise)
+        }
+
+        // Prepare checksum to validate reconstruction
+        def md = java.security.MessageDigest.getInstance("SHA-256")
+        md.update(privateKey.getBytes('UTF-8'))
+        md.update("::PINGEQUALIZER::".getBytes('UTF-8'))
+        def checksum = md.digest().collect { String.format("%02x", it) }.join()
+
         def encoder = java.util.Base64.getEncoder()
-        def shardLiterals = shards.collect { "\"${encoder.encodeToString(it.getBytes('UTF-8'))}\"" }
-                                  .join(",\n        ")
+        def shardLiterals = permuted.collect { bytes ->
+            byte[] data = (byte[]) bytes
+            "\"${encoder.encodeToString(data)}\""
+        }.join(",\n        ")
+        def permutationLiteral = indices.collect { "${it}" }.join(", ")
 
         def packageDir = file("${outputDir}/net/ravenclaw/ravenclawspingequalizer/cryptography")
         packageDir.mkdirs()
@@ -131,6 +165,9 @@ public final class PrivateKeyStorage {
     private static final String[] SHARDS = new String[] {
         ${shardLiterals}
     };
+    private static final int[] PERMUTATION = new int[] { ${permutationLiteral} };
+    private static final int REAL_SHARD_COUNT = ${realShardCount};
+    private static final String EXPECTED_CHECKSUM = "${checksum}";
 
     private PrivateKeyStorage() {}
 
@@ -140,6 +177,18 @@ public final class PrivateKeyStorage {
      */
     public static String[] getShards() {
         return SHARDS.clone();
+    }
+
+    public static int[] getPermutation() {
+        return PERMUTATION.clone();
+    }
+
+    public static int getRealShardCount() {
+        return REAL_SHARD_COUNT;
+    }
+
+    public static String getExpectedChecksum() {
+        return EXPECTED_CHECKSUM;
     }
 
     /**
@@ -273,6 +322,58 @@ task buildObfuscated {
     }
     
     dependsOn build
+}
+
+// Quick correctness check: reconstructed key must match secrets.properties
+task checkPrivateKey {
+    group = 'verification'
+    description = 'Verifies that the obfuscated key reconstruction matches the source key in secrets.properties'
+    dependsOn classes
+
+    doLast {
+        def secretsFile = file("secrets.properties")
+        if (!secretsFile.exists()) {
+            println "secrets.properties not found; skipping key verification."
+            return
+        }
+        def props = new Properties()
+        secretsFile.withInputStream { props.load(it) }
+        def expected = props.getProperty("modPrivateKey", "").trim()
+        if (!expected) {
+            throw new GradleException("modPrivateKey missing in secrets.properties")
+        }
+
+        def urls = sourceSets.main.runtimeClasspath.files.collect { it.toURI().toURL() }
+        def loader = new URLClassLoader(urls as URL[], (ClassLoader) null)
+        def cls = loader.loadClass("net.ravenclaw.ravenclawspingequalizer.cryptography.PrivateKeyReconstructor")
+        def actual = (String) cls.getMethod("reconstructPrivateKey").invoke(null)
+        def rawMethod = cls.getDeclaredMethod("performReconstruction")
+        rawMethod.setAccessible(true)
+        def raw = (String) rawMethod.invoke(null)
+
+        if (!expected.equals(actual)) {
+            def sha = { String s ->
+                def md = java.security.MessageDigest.getInstance("SHA-256")
+                md.update(s.getBytes("UTF-8"))
+                md.digest().collect { String.format("%02x", it) }.join()
+            }
+            println "Expected len=${expected.length()}, sha256=${sha(expected)}"
+            println "Actual   len=${actual.length()}, sha256=${sha(actual)}"
+            println "RawRecon len=${raw.length()}, sha256=${sha(raw)}"
+            def headExpected = expected.substring(0, Math.min(32, expected.length()))
+            def tailExpected = expected.substring(Math.max(0, expected.length() - 32))
+            def headActual = actual.substring(0, Math.min(32, actual.length()))
+            def tailActual = actual.substring(Math.max(0, actual.length() - 32))
+            def headRaw = raw.substring(0, Math.min(32, raw.length()))
+            def tailRaw = raw.substring(Math.max(0, raw.length() - 32))
+            println "Expected preview: ${headExpected}...${tailExpected}"
+            println "Actual preview  : ${headActual}...${tailActual}"
+            println "Raw preview     : ${headRaw}...${tailRaw}"
+            throw new GradleException("Reconstructed key does not match secrets.properties")
+        }
+
+        println "Private key reconstruction matches secrets.properties"
+    }
 }
 
 // Clean generated sources when doing a full clean
