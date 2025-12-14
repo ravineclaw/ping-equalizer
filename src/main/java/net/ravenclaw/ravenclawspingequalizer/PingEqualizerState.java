@@ -83,24 +83,31 @@ public class PingEqualizerState {
     }
 
     public void setTotalPing(int target) {
+        int normalizedTarget = Math.max(0, target);
+        boolean preserveDelay = currentMode == Mode.TOTAL && normalizedTarget == totalTarget;
+
         currentMode = Mode.TOTAL;
-        totalTarget = Math.max(0, target);
+        totalTarget = normalizedTarget;
 
         long now = Util.getMeasuringTimeMs();
-        resetMeasurementState();
+        if (!preserveDelay) {
+            resetMeasurementState();
+        }
+        lastDelayUpdateTimeMs = now;
 
         MinecraftClient client = MinecraftClient.getInstance();
         int baseEstimate = estimateInitialBasePing(client);
         if (baseEstimate > 0) {
             seedBaseEstimate(baseEstimate);
             double targetDelay = Math.max(0, totalTarget - baseEstimate);
-            preciseDelay = targetDelay;
+            if (!preserveDelay || targetDelay > preciseDelay) {
+                preciseDelay = targetDelay;
+            }
             currentDelayMs = quantizeDelayMs(preciseDelay);
-        } else {
-            preciseDelay = 0;
-            currentDelayMs = 0;
+        } else if (!preserveDelay) {
+            preciseDelay = totalTarget;
+            currentDelayMs = quantizeDelayMs(preciseDelay);
         }
-        lastDelayUpdateTimeMs = now;
 
         ClientPlayNetworkHandler handler = client == null ? null : client.getNetworkHandler();
         if (handler != null) {
@@ -403,12 +410,12 @@ public class PingEqualizerState {
             return;
         }
         double distance = Math.abs(delta);
-        double minStep = 0.25;
-        double maxStep = 30.0;
-        double step = distance * 0.15;
+        double minStep = 0.5;
+        double maxStep = 60.0;
+        double step = distance * 0.4;
         step = Math.min(distance, Math.max(minStep, Math.min(step, maxStep)));
         preciseDelay += Math.copySign(step, delta);
-        if (Math.abs(targetDelayMs - preciseDelay) < 0.2) {
+        if (Math.abs(targetDelayMs - preciseDelay) < 0.5) {
             preciseDelay = targetDelayMs;
         }
     }
