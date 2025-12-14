@@ -30,16 +30,39 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
     @Unique
     private int pingEqualizer$tickCounter = 0;
 
+    @Inject(method = "addFlowControlHandler", at = @At("RETURN"))
+    private void pingEqualizer$onAddFlowControl(ChannelPipeline pipeline, CallbackInfo ci) {
+        try {
+            if (pingEqualizer$channelHandler == null) {
+                pingEqualizer$channelHandler = new PingEqualizerChannelHandler();
+            }
+            if (pipeline.get(PingEqualizerChannelHandler.HANDLER_NAME) == null) {
+                if (pipeline.get("packet_handler") != null) {
+                    pipeline.addBefore("packet_handler", PingEqualizerChannelHandler.HANDLER_NAME, pingEqualizer$channelHandler);
+                } else {
+                    pipeline.addLast(PingEqualizerChannelHandler.HANDLER_NAME, pingEqualizer$channelHandler);
+                }
+            }
+        } catch (Exception e) {
+            org.slf4j.LoggerFactory.getLogger("PingEqualizer")
+                .warn("Failed to install channel handler at pipeline init: {}", e.getMessage());
+        }
+    }
+
     @Inject(method = "channelActive", at = @At("TAIL"))
     private void pingEqualizer$onChannelActive(io.netty.channel.ChannelHandlerContext context, CallbackInfo ci) {
         try {
             ChannelPipeline pipeline = context.pipeline();
 
-            if (pipeline.get(PingEqualizerChannelHandler.HANDLER_NAME) != null) {
-                pipeline.remove(PingEqualizerChannelHandler.HANDLER_NAME);
+            PingEqualizerChannelHandler existing = (PingEqualizerChannelHandler) pipeline.get(PingEqualizerChannelHandler.HANDLER_NAME);
+            if (existing != null) {
+                pingEqualizer$channelHandler = existing;
+                return;
             }
 
-            pingEqualizer$channelHandler = new PingEqualizerChannelHandler();
+            if (pingEqualizer$channelHandler == null) {
+                pingEqualizer$channelHandler = new PingEqualizerChannelHandler();
+            }
 
             if (pipeline.get("packet_handler") != null) {
                 pipeline.addBefore("packet_handler", PingEqualizerChannelHandler.HANDLER_NAME, pingEqualizer$channelHandler);
@@ -71,13 +94,18 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
         }
 
         ChannelPipeline pipeline = channel.pipeline();
-        if (pipeline.get(PingEqualizerChannelHandler.HANDLER_NAME) == null && pingEqualizer$channelHandler != null) {
+        if (pipeline.get(PingEqualizerChannelHandler.HANDLER_NAME) == null) {
             try {
+                if (pingEqualizer$channelHandler == null) {
+                    pingEqualizer$channelHandler = new PingEqualizerChannelHandler();
+                }
                 if (pipeline.get("packet_handler") != null) {
                     pipeline.addBefore("packet_handler", PingEqualizerChannelHandler.HANDLER_NAME, pingEqualizer$channelHandler);
-                    org.slf4j.LoggerFactory.getLogger("PingEqualizer")
-                        .info("Reinstalled channel handler after it was removed");
+                } else {
+                    pipeline.addLast(PingEqualizerChannelHandler.HANDLER_NAME, pingEqualizer$channelHandler);
                 }
+                org.slf4j.LoggerFactory.getLogger("PingEqualizer")
+                    .info("Reinstalled channel handler after it was removed");
             } catch (Exception ignored) {
             }
         }

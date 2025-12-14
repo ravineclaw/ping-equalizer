@@ -35,6 +35,7 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
     private String lastMessage = "";
     private final Deque<String> pendingAnnouncements = new ArrayDeque<>();
     private boolean spoofInProgress = false;
+    private int announcementEpoch = 0;
     private int tickCounter = 0;
 
     public static CryptoHandler cryptoHandler;
@@ -47,6 +48,7 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             PingEqualizerState.getInstance().tick(client);
             cryptoHandler.tick();
+            processPendingAnnouncements(client);
 
             tickCounter++;
             if (tickCounter >= 1200) {
@@ -61,6 +63,7 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
             } else {
                 cryptoHandler.setCurrentServer("");
             }
+            announceStatusOnServerChange(client);
         });
 
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
@@ -178,24 +181,33 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
     }
 
     private void resetAnnouncementState() {
+        announcementEpoch++;
         lastMessage = "";
         pendingAnnouncements.clear();
         spoofInProgress = false;
     }
 
     private void notifyStateChange(String message) {
-        if (message.equals(lastMessage)) {
+        String finalMessage = maybeAppendDeprecationNotice(message);
+        if (finalMessage.equals(lastMessage)) {
             return;
         }
-        lastMessage = message;
+        lastMessage = finalMessage;
 
-        MinecraftClient client = MinecraftClient.getInstance();
-        if (client.player == null) {
+        pendingAnnouncements.addLast(finalMessage);
+        processPendingAnnouncements(MinecraftClient.getInstance());
+    }
+
+    private void announceStatusOnServerChange(MinecraftClient client) {
+        if (client == null || client.player == null) {
             return;
         }
-
-        pendingAnnouncements.addLast(message);
-        processPendingAnnouncements(client);
+        PingEqualizerState state = PingEqualizerState.getInstance();
+        if (state.getMode() == PingEqualizerState.Mode.OFF) {
+            return;
+        }
+        // Use the normal announcement path so chat visibility spoofing still works.
+        notifyStateChange(state.getServerSwitchStatusMessage());
     }
 
     private void processPendingAnnouncements(MinecraftClient client) {
@@ -216,6 +228,7 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
         }
 
         spoofInProgress = true;
+        final int epoch = announcementEpoch;
         SyncedClientOptions originalOptions = client.options.getSyncedOptions();
         SyncedClientOptions forcedOptions = copyWithVisibility(originalOptions, ChatVisibility.FULL);
 
@@ -223,6 +236,9 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
 
         CompletableFuture.delayedExecutor(SPOOF_SEND_DELAY_MS, TimeUnit.MILLISECONDS).execute(() ->
                 client.execute(() -> {
+                    if (epoch != announcementEpoch) {
+                        return;
+                    }
                     if (client.player == null) {
                         spoofInProgress = false;
                         return;
@@ -232,9 +248,14 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
 
                     CompletableFuture.delayedExecutor(SPOOF_RESTORE_DELAY_MS, TimeUnit.MILLISECONDS).execute(() ->
                             client.execute(() -> {
-                                if (client.player != null) {
-                                    client.player.networkHandler.sendPacket(new ClientOptionsC2SPacket(originalOptions));
+                                if (client.player == null) {
+                                    spoofInProgress = false;
+                                    processPendingAnnouncements(client);
+                                    return;
                                 }
+
+                                SyncedClientOptions restoreOptions = client.options.getSyncedOptions();
+                                client.player.networkHandler.sendPacket(new ClientOptionsC2SPacket(restoreOptions));
                                 spoofInProgress = false;
                                 processPendingAnnouncements(client);
                             })

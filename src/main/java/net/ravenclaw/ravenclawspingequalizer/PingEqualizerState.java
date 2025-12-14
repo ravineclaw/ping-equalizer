@@ -273,6 +273,15 @@ public class PingEqualizerState {
         return String.format("Ping Equalizer: %s | Base: %dms | Added: %dms | Total: %dms", modeStr, base, added, total);
     }
 
+    public String getServerSwitchStatusMessage() {
+        return switch (currentMode) {
+            case OFF -> "PE Status; OFF";
+            case ADD -> String.format("PE Status; ADD: %d ms", currentDelayMs);
+            case TOTAL -> String.format("PE Status; Total: %d ms", totalTarget);
+            case MATCH -> String.format("PE Status; Match: %s", matchPlayerName);
+        };
+    }
+
     public Mode getMode() {
         return currentMode;
     }

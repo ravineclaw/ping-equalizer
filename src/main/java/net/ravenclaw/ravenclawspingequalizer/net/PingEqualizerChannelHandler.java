@@ -8,7 +8,9 @@ import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPromise;
 import net.minecraft.network.packet.Packet;
+import net.minecraft.network.packet.c2s.common.KeepAliveC2SPacket;
 import net.minecraft.network.packet.c2s.query.QueryPingC2SPacket;
+import net.minecraft.network.packet.s2c.common.KeepAliveS2CPacket;
 import net.minecraft.network.packet.s2c.query.PingResultS2CPacket;
 import net.ravenclaw.ravenclawspingequalizer.PingEqualizerState;
 
@@ -92,7 +94,7 @@ public class PingEqualizerChannelHandler extends ChannelDuplexHandler {
             return;
         }
 
-        long delay = state.getOutboundDelayPortion();
+        long delay = packet instanceof KeepAliveC2SPacket ? state.getCurrentDelayMs() : state.getOutboundDelayPortion();
 
         if (delay <= 0 && outboundQueue.isEmpty()) {
             if (packet instanceof QueryPingC2SPacket qp) {
@@ -128,11 +130,15 @@ public class PingEqualizerChannelHandler extends ChannelDuplexHandler {
     }
 
     private void drainOutbound(ChannelHandlerContext ctx) {
+        boolean wrote = false;
         try {
             while (true) {
                 OutboundTask task = outboundQueue.peek();
                 if (task == null) {
                     processingOutbound.set(false);
+                    if (wrote && ctx.channel().isOpen()) {
+                        ctx.flush();
+                    }
                     return;
                 }
 
@@ -144,9 +150,14 @@ public class PingEqualizerChannelHandler extends ChannelDuplexHandler {
                             PingEqualizerState.getInstance().onPingActuallySent(qp.getStartTime());
                         }
                         ctx.write(task.msg, task.promise);
-                        ctx.flush();
+                        wrote = true;
                     }
                     continue;
+                }
+
+                if (wrote && ctx.channel().isOpen()) {
+                    ctx.flush();
+                    wrote = false;
                 }
 
                 if (delayNanos <= PRECISION_WINDOW_NANOS) {
@@ -168,6 +179,11 @@ public class PingEqualizerChannelHandler extends ChannelDuplexHandler {
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
         if (!active || !(msg instanceof Packet<?> packet)) {
+            super.channelRead(ctx, msg);
+            return;
+        }
+
+        if (packet instanceof KeepAliveS2CPacket) {
             super.channelRead(ctx, msg);
             return;
         }
@@ -268,15 +284,8 @@ public class PingEqualizerChannelHandler extends ChannelDuplexHandler {
 
     private static void spinWait(long nanos) {
         long deadline = System.nanoTime() + nanos;
-        while (true) {
-            long remaining = deadline - System.nanoTime();
-            if (remaining <= 0) {
-                return;
-            }
+        while (System.nanoTime() < deadline) {
             Thread.onSpinWait();
-            if (remaining > TimeUnit.MILLISECONDS.toNanos(1)) {
-                Thread.yield();
-            }
         }
     }
 
@@ -318,4 +327,3 @@ public class PingEqualizerChannelHandler extends ChannelDuplexHandler {
         processingInbound.set(false);
     }
 }
-
