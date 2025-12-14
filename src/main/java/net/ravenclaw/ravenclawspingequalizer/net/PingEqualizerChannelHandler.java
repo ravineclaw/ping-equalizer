@@ -30,6 +30,9 @@ public class PingEqualizerChannelHandler extends ChannelDuplexHandler {
     private volatile boolean active = true;
     private volatile ChannelHandlerContext savedContext;
 
+    // Minimal spacing used when a backlog is detected to avoid packet bursts.
+    private static final long BACKLOG_SPREAD_NANOS = TimeUnit.MICROSECONDS.toNanos(500);
+
     private static final class OutboundTask {
         final Object msg;
         final ChannelPromise promise;
@@ -112,7 +115,10 @@ public class PingEqualizerChannelHandler extends ChannelDuplexHandler {
 
         long delay = state.getOutboundDelayPortion();
 
-        if (delay <= 0 && outboundQueue.isEmpty()) {
+        if (delay <= 0) {
+            if (!outboundQueue.isEmpty()) {
+                flushQueuesNow(ctx); // flush any pending to avoid bursts when delay just dropped
+            }
             if (packet instanceof QueryPingC2SPacket qp) {
                 PingEqualizerState.getInstance().onPingActuallySent(qp.getStartTime());
             }
@@ -144,6 +150,7 @@ public class PingEqualizerChannelHandler extends ChannelDuplexHandler {
 
         boolean wrote = false;
         long now = System.nanoTime();
+        boolean backlogDetected = false;
         while (true) {
             OutboundTask task = outboundQueue.peekFirst();
             if (task == null) {
@@ -162,13 +169,23 @@ public class PingEqualizerChannelHandler extends ChannelDuplexHandler {
                 wrote = true;
             }
             now = System.nanoTime();
+
+            OutboundTask next = outboundQueue.peekFirst();
+            if (next != null && next.sendTimeNanos <= now) {
+                backlogDetected = true;
+                break;
+            }
         }
 
         if (wrote && ctx.channel().isOpen()) {
             ctx.flush();
         }
 
-        ensureOutboundScheduled(ctx);
+        if (backlogDetected) {
+            scheduleOutboundAfter(ctx, BACKLOG_SPREAD_NANOS);
+        } else {
+            ensureOutboundScheduled(ctx);
+        }
     }
 
     @Override
@@ -210,7 +227,10 @@ public class PingEqualizerChannelHandler extends ChannelDuplexHandler {
 
         long delay = state.getInboundDelayPortion();
 
-        if (delay <= 0 && inboundQueue.isEmpty()) {
+        if (delay <= 0) {
+            if (!inboundQueue.isEmpty()) {
+                flushQueuesNow(ctx); // flush pending inbound to prevent clumping when delay drops
+            }
             if (packet instanceof PingResultS2CPacket pingResult) {
                 state.onPingArrived(pingResult.startTime());
                 state.handlePingResult(pingResult);
@@ -242,6 +262,7 @@ public class PingEqualizerChannelHandler extends ChannelDuplexHandler {
         inboundDrainAtNanos = Long.MAX_VALUE;
 
         long now = System.nanoTime();
+        boolean backlogDetected = false;
         while (true) {
             InboundTask task = inboundQueue.peekFirst();
             if (task == null) {
@@ -261,9 +282,19 @@ public class PingEqualizerChannelHandler extends ChannelDuplexHandler {
                 ctx.fireChannelRead(task.msg);
             }
             now = System.nanoTime();
+
+            InboundTask next = inboundQueue.peekFirst();
+            if (next != null && next.deliverTimeNanos <= now) {
+                backlogDetected = true;
+                break;
+            }
         }
 
-        ensureInboundScheduled(ctx);
+        if (backlogDetected) {
+            scheduleInboundAfter(ctx, BACKLOG_SPREAD_NANOS);
+        } else {
+            ensureInboundScheduled(ctx);
+        }
     }
 
     private boolean shouldBypassPacket(Packet<?> packet) {
@@ -336,6 +367,12 @@ public class PingEqualizerChannelHandler extends ChannelDuplexHandler {
         outboundDrainFuture = ctx.executor().schedule(() -> drainOutbound(ctx), delayNanos, TimeUnit.NANOSECONDS);
     }
 
+    private void scheduleOutboundAfter(ChannelHandlerContext ctx, long delayNanos) {
+        cancelOutboundSchedule();
+        outboundDrainAtNanos = System.nanoTime() + delayNanos;
+        outboundDrainFuture = ctx.executor().schedule(() -> drainOutbound(ctx), Math.max(0, delayNanos), TimeUnit.NANOSECONDS);
+    }
+
     private void ensureInboundScheduled(ChannelHandlerContext ctx) {
         if (!ctx.executor().inEventLoop()) {
             ctx.executor().execute(() -> ensureInboundScheduled(ctx));
@@ -361,6 +398,12 @@ public class PingEqualizerChannelHandler extends ChannelDuplexHandler {
         inboundDrainAtNanos = nextAt;
         long delayNanos = Math.max(0, nextAt - System.nanoTime());
         inboundDrainFuture = ctx.executor().schedule(() -> drainInbound(ctx), delayNanos, TimeUnit.NANOSECONDS);
+    }
+
+    private void scheduleInboundAfter(ChannelHandlerContext ctx, long delayNanos) {
+        cancelInboundSchedule();
+        inboundDrainAtNanos = System.nanoTime() + delayNanos;
+        inboundDrainFuture = ctx.executor().schedule(() -> drainInbound(ctx), Math.max(0, delayNanos), TimeUnit.NANOSECONDS);
     }
 
     private void cancelOutboundSchedule() {

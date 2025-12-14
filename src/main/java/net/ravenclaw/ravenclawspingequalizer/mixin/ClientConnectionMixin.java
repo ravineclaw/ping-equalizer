@@ -3,6 +3,7 @@ package net.ravenclaw.ravenclawspingequalizer.mixin;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
+import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
@@ -11,6 +12,7 @@ import io.netty.channel.Channel;
 import io.netty.channel.ChannelPipeline;
 import net.minecraft.network.ClientConnection;
 import net.minecraft.network.NetworkPhase;
+import net.minecraft.network.NetworkSide;
 import net.minecraft.network.NetworkState;
 import net.minecraft.network.listener.PacketListener;
 import net.minecraft.text.Text;
@@ -24,14 +26,26 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
     @Shadow
     private Channel channel;
 
+    @Shadow
+    @Final
+    private NetworkSide side;
+
     @Unique
     private PingEqualizerChannelHandler pingEqualizer$channelHandler;
 
     @Unique
     private int pingEqualizer$tickCounter = 0;
 
+    @Unique
+    private boolean pingEqualizer$isClientboundConnection() {
+        return this.side == NetworkSide.CLIENTBOUND;
+    }
+
     @Inject(method = "addFlowControlHandler", at = @At("RETURN"))
     private void pingEqualizer$onAddFlowControl(ChannelPipeline pipeline, CallbackInfo ci) {
+        if (!pingEqualizer$isClientboundConnection()) {
+            return;
+        }
         try {
             if (pingEqualizer$channelHandler == null) {
                 pingEqualizer$channelHandler = new PingEqualizerChannelHandler();
@@ -51,6 +65,9 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
 
     @Inject(method = "channelActive", at = @At("TAIL"))
     private void pingEqualizer$onChannelActive(io.netty.channel.ChannelHandlerContext context, CallbackInfo ci) {
+        if (!pingEqualizer$isClientboundConnection()) {
+            return;
+        }
         try {
             ChannelPipeline pipeline = context.pipeline();
 
@@ -77,6 +94,9 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
 
     @Inject(method = "disconnect(Lnet/minecraft/text/Text;)V", at = @At("HEAD"))
     private void pingEqualizer$onDisconnect(Text reason, CallbackInfo ci) {
+        if (!pingEqualizer$isClientboundConnection()) {
+            return;
+        }
         PingEqualizerState.getInstance().setOff();
         if (pingEqualizer$channelHandler != null) {
             pingEqualizer$channelHandler.setActive(false);
@@ -85,6 +105,9 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
 
     @Inject(method = "tick", at = @At("TAIL"))
     private void pingEqualizer$onTick(CallbackInfo ci) {
+        if (!pingEqualizer$isClientboundConnection()) {
+            return;
+        }
         if (channel == null || !channel.isOpen()) {
             return;
         }
@@ -113,11 +136,17 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
 
     @Inject(method = "transitionInbound", at = @At("HEAD"))
     private void pingEqualizer$onTransitionInbound(NetworkState<?> state, PacketListener listener, CallbackInfo ci) {
+        if (!pingEqualizer$isClientboundConnection()) {
+            return;
+        }
         pingEqualizer$handlePhaseTransition(state.id());
     }
 
     @Inject(method = "transitionOutbound", at = @At("HEAD"))
     private void pingEqualizer$onTransitionOutbound(NetworkState<?> state, CallbackInfo ci) {
+        if (!pingEqualizer$isClientboundConnection()) {
+            return;
+        }
         pingEqualizer$handlePhaseTransition(state.id());
     }
 
@@ -134,6 +163,9 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
 
     @Override
     public void pingEqualizer$signalPlayPhaseEntry() {
+        if (!pingEqualizer$isClientboundConnection()) {
+            return;
+        }
         if (pingEqualizer$channelHandler != null) {
             pingEqualizer$channelHandler.setActive(true);
         }

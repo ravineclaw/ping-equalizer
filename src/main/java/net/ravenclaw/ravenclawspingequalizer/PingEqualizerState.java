@@ -20,14 +20,8 @@ public class PingEqualizerState {
     private static final long DELAY_UPDATE_MIN_INTERVAL_MS = 150;
     private static final long DELAY_HYSTERESIS_MS = 2;
     private static final int DELAY_QUANTUM_MS = 2;
-    private static final int TOTAL_INITIAL_BASE_MARGIN_MS = 6;
     private static final double BASE_PING_ALPHA = 0.07;
-    private static final double BASE_PING_MAX_STEP_MS = 60.0;
-    private static final long TOTAL_CALIB_PING_INTERVAL_MS = 250;
-    private static final long TOTAL_TRACK_PING_INTERVAL_MS = 2000;
-    private static final long TOTAL_EARLY_TRACK_PING_INTERVAL_MS = 500;
-    private static final long TOTAL_EARLY_TRACK_WINDOW_MS = 90_000;
-    private static final long TOTAL_RECALIBRATE_THRESHOLD_MS = 4;
+    private static final double BASE_PING_MAX_STEP_MS = 25.0;
     private static final long MATCH_TARGET_RESET_MS = 5000;
     private static final int MATCH_TARGET_NOISE_FLOOR_MS = 3;
     private static final int MATCH_TARGET_MIN_STEP_MS = 1;
@@ -42,10 +36,6 @@ public class PingEqualizerState {
     private long currentDelayMs = 0;
     private double preciseDelay = 0;
     private long lastDelayUpdateTimeMs = 0;
-
-    private boolean totalCalibrating = false;
-    private int totalCalibSamples = 0;
-    private long totalModeStartTimeMs = 0;
 
     private int lastValidBasePing = 0;
     private double smoothedBasePing = 0;
@@ -74,8 +64,6 @@ public class PingEqualizerState {
         currentMode = Mode.OFF;
         currentDelayMs = 0;
         preciseDelay = 0;
-        totalCalibrating = false;
-        totalCalibSamples = 0;
         resetMeasurementState();
         resetMatchSmoother();
     }
@@ -84,7 +72,6 @@ public class PingEqualizerState {
         currentMode = Mode.ADD;
         addAmount = Math.max(0, amount);
         preciseDelay = addAmount;
-
         currentDelayMs = quantizeDelayMs(preciseDelay);
         lastDelayUpdateTimeMs = Util.getMeasuringTimeMs();
     }
@@ -99,15 +86,14 @@ public class PingEqualizerState {
         MinecraftClient client = MinecraftClient.getInstance();
         int baseEstimate = estimateInitialBasePing(client);
         if (baseEstimate > 0) {
-            seedBaseEstimate(baseEstimate + TOTAL_INITIAL_BASE_MARGIN_MS);
+            seedBaseEstimate(baseEstimate);
+            double targetDelay = Math.max(0, totalTarget - baseEstimate);
+            preciseDelay = targetDelay;
+            currentDelayMs = quantizeDelayMs(preciseDelay);
+        } else {
+            preciseDelay = 0;
+            currentDelayMs = 0;
         }
-
-        // Keep TOTAL perfectly smooth: hold delay at 0 while calibrating base ping, then lock a constant delay.
-        totalCalibrating = true;
-        totalCalibSamples = 0;
-        totalModeStartTimeMs = now;
-        preciseDelay = 0;
-        currentDelayMs = 0;
         lastDelayUpdateTimeMs = now;
 
         ClientPlayNetworkHandler handler = client == null ? null : client.getNetworkHandler();
@@ -120,8 +106,6 @@ public class PingEqualizerState {
         currentMode = Mode.MATCH;
         matchPlayerName = playerName == null ? "" : playerName.trim();
         resetMatchSmoother();
-        totalCalibrating = false;
-        totalCalibSamples = 0;
 
         MinecraftClient client = MinecraftClient.getInstance();
         ClientPlayNetworkHandler handler = client == null ? null : client.getNetworkHandler();
@@ -134,15 +118,11 @@ public class PingEqualizerState {
     public void suspendForProtocolChange() {
         resetMeasurementState();
         resetMatchSmoother();
-        totalCalibrating = false;
-        totalCalibSamples = 0;
     }
 
     public void prepareForNewPlaySession() {
         resetMeasurementState();
         resetMatchSmoother();
-        totalCalibrating = false;
-        totalCalibSamples = 0;
         if (currentMode == Mode.ADD) {
             preciseDelay = addAmount;
             currentDelayMs = quantizeDelayMs(preciseDelay);
@@ -210,10 +190,6 @@ public class PingEqualizerState {
                 : smoothedBasePing * (1.0 - BASE_PING_ALPHA) + candidate * BASE_PING_ALPHA;
         lastBasePingSampleTime = now;
         awaitingBasePing = false;
-
-        if (currentMode == Mode.TOTAL && totalCalibrating) {
-            totalCalibSamples++;
-        }
     }
 
     public void tick(MinecraftClient client) {
@@ -278,6 +254,12 @@ public class PingEqualizerState {
             return;
         }
 
+        if (currentMode == Mode.ADD) {
+            preciseDelay = addAmount;
+            currentDelayMs = quantizeDelayMs(preciseDelay);
+            return;
+        }
+
         if (client == null) {
             client = MinecraftClient.getInstance();
         }
@@ -291,46 +273,7 @@ public class PingEqualizerState {
 
         long now = Util.getMeasuringTimeMs();
 
-        if (currentMode == Mode.TOTAL) {
-            if (totalCalibrating) {
-                if (!awaitingBasePing && now - lastPingRequestTime >= TOTAL_CALIB_PING_INTERVAL_MS) {
-                    requestPingIfNeeded(handler, true);
-                }
-                if (totalCalibSamples > 0 && hasFreshBase(now)) {
-                    int basePing = getCalibratedBase();
-                    long targetDelay = Math.max(0, (long) totalTarget - basePing);
-                    preciseDelay = targetDelay;
-                    currentDelayMs = quantizeDelayMs(preciseDelay);
-                    lastDelayUpdateTimeMs = now;
-                    totalCalibrating = false;
-                }
-            } else {
-                long age = now - totalModeStartTimeMs;
-                long interval = age <= TOTAL_EARLY_TRACK_WINDOW_MS ? TOTAL_EARLY_TRACK_PING_INTERVAL_MS : TOTAL_TRACK_PING_INTERVAL_MS;
-                if (!awaitingBasePing && now - lastPingRequestTime >= interval) {
-                    requestPingIfNeeded(handler, true);
-                }
-                if (hasFreshBase(now) && totalTarget > 0) {
-                    int basePing = getCalibratedBase();
-                    long predictedTotal = basePing + currentDelayMs;
-                    long delta = Math.abs((long) totalTarget - predictedTotal);
-                    if (delta > TOTAL_RECALIBRATE_THRESHOLD_MS) {
-                        long targetDelay = Math.max(0, (long) totalTarget - basePing);
-                        preciseDelay = targetDelay;
-                        currentDelayMs = quantizeDelayMs(preciseDelay);
-                        lastDelayUpdateTimeMs = now;
-                    }
-                }
-            }
-            return;
-        }
-
         requestPingIfNeeded(handler, false);
-
-        if (currentMode == Mode.ADD) {
-            setCurrentDelayQuantized(now, quantizeDelayMs(preciseDelay));
-            return;
-        }
 
         if (!hasFreshBase(now)) {
             return;
@@ -343,22 +286,7 @@ public class PingEqualizerState {
         }
 
         long targetDelay = Math.max(0, targetPing - basePing);
-
-        if (preciseDelay != targetDelay) {
-            double diff = targetDelay - preciseDelay;
-            double maxStep = 10.0;
-            double step = diff * 0.12;
-
-            if (Math.abs(step) > maxStep) {
-                step = Math.signum(step) * maxStep;
-            }
-
-            preciseDelay += step;
-
-            if (Math.abs(targetDelay - preciseDelay) < 0.5) {
-                preciseDelay = targetDelay;
-            }
-        }
+        adjustPreciseDelaySmoothly(targetDelay);
         setCurrentDelayQuantized(now, quantizeDelayMs(preciseDelay));
     }
 
@@ -417,10 +345,6 @@ public class PingEqualizerState {
             return String.format("Ping Equalizer: %s | Added: %dms", modeStr, currentDelayMs);
         }
 
-        if (currentMode == Mode.TOTAL && totalCalibrating) {
-            return String.format("Ping Equalizer: %s | Calibrating base ping...", modeStr);
-        }
-
         if (!hasFreshBase(now)) {
             return String.format("Ping Equalizer: %s | Measuring base ping...", modeStr);
         }
@@ -463,6 +387,23 @@ public class PingEqualizerState {
 
     public long getInboundDelayPortion() {
         return currentDelayMs - getOutboundDelayPortion();
+    }
+
+    private void adjustPreciseDelaySmoothly(long targetDelayMs) {
+        double delta = targetDelayMs - preciseDelay;
+        if (Math.abs(delta) < 0.01) {
+            preciseDelay = targetDelayMs;
+            return;
+        }
+        double distance = Math.abs(delta);
+        double minStep = 0.25;
+        double maxStep = 30.0;
+        double step = distance * 0.15;
+        step = Math.min(distance, Math.max(minStep, Math.min(step, maxStep)));
+        preciseDelay += Math.copySign(step, delta);
+        if (Math.abs(targetDelayMs - preciseDelay) < 0.2) {
+            preciseDelay = targetDelayMs;
+        }
     }
 
     private int computeMatchTarget(ClientPlayNetworkHandler handler) {

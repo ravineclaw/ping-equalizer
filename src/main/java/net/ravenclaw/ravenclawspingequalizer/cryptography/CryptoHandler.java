@@ -185,26 +185,26 @@ public class CryptoHandler {
         if (!isHashApproved) {
             isValidated = false;
             validateHashAsync();
-            return;
         }
 
         // 1. Generate timestamp ONCE
         long timestamp = System.currentTimeMillis();
 
-        // Heartbeats must be signed; if we can't sign, skip to avoid spamming failed heartbeats.
-        if (!canSign || signingKey == null) {
-            isValidated = false;
-            return;
-        }
+        String signature = null;
+        String modStatus = "unsigned";
 
-        // 2. Pass timestamp to signing method
-        String signature = createAndSignHeartbeatPayload(timestamp);
-        if (signature == null || signature.isEmpty()) {
-            isValidated = false;
-            return;
+        // Only sign if the hash is approved; if the hash is wrong, always send an unsigned heartbeat.
+        if (isHashApproved) {
+            if (canSign && signingKey != null) {
+                signature = createAndSignHeartbeatPayload(timestamp);
+            }
+            if (signature == null || signature.isEmpty()) {
+                signature = null;
+                modStatus = "unsigned";
+            } else {
+                modStatus = "signed";
+            }
         }
-
-        String modStatus = "signed";
         String version = modVersion;
 
         net.ravenclaw.ravenclawspingequalizer.PingEqualizerState peState =
