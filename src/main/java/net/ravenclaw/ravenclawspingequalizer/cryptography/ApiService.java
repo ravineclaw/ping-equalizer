@@ -68,7 +68,7 @@ public final class ApiService {
                 String response = httpGetApiPath(path);
 
                 if (response == null || response.isEmpty()) {
-                    return new HashValidationResponse(false, null, null);
+                    return new HashValidationResponse(false, null, null, false);
                 }
 
                 JsonObject json = JsonParser.parseString(response).getAsJsonObject();
@@ -77,15 +77,16 @@ public final class ApiService {
                 String version = json.has("version") && !json.get("version").isJsonNull()
                     ? json.get("version").getAsString()
                     : null;
+                boolean deprecated = json.has("deprecated") && json.get("deprecated").getAsBoolean();
 
-                return new HashValidationResponse(isValid, signature, version);
+                return new HashValidationResponse(isValid, signature, version, deprecated);
             } catch (Exception e) {
-                return new HashValidationResponse(false, null, null);
+                return new HashValidationResponse(false, null, null, false);
             }
         });
     }
 
-    public record HashValidationResponse(boolean isValid, String signature, String version) {
+    public record HashValidationResponse(boolean isValid, String signature, String version, boolean deprecated) {
     }
 
     public static CompletableFuture<Boolean> sendHeartbeat(HeartbeatPayload payload) {
@@ -234,6 +235,7 @@ public final class ApiService {
             boolean isConnected = json.has("is_connected") && json.get("is_connected").getAsBoolean();
             boolean isHashCorrect = json.has("is_hash_correct") && json.get("is_hash_correct").getAsBoolean();
             boolean isSignatureCorrect = json.has("is_signature_correct") && json.get("is_signature_correct").getAsBoolean();
+            boolean isSigned = json.has("is_signed") && json.get("is_signed").getAsBoolean();
             String modStatus = json.has("mod_status") ? json.get("mod_status").getAsString() : "unknown";
             String currentServer = json.has("current_server") ? json.get("current_server").getAsString() : "";
             String username = json.has("username") ? json.get("username").getAsString() : "";
@@ -244,6 +246,7 @@ public final class ApiService {
             int peBasePing = json.has("pe_base_ping") ? json.get("pe_base_ping").getAsInt() : 0;
             int peTotalPing = json.has("pe_total_ping") ? json.get("pe_total_ping").getAsInt() : 0;
             String modVersion = json.has("mod_version") ? json.get("mod_version").getAsString() : "";
+            boolean isDeprecated = json.has("is_deprecated") && json.get("is_deprecated").getAsBoolean();
 
             return new PlayerValidationResult(
                 isConnected,
@@ -259,7 +262,9 @@ public final class ApiService {
                 peBasePing,
                 peTotalPing,
                 modVersion,
-                false
+                false,
+                isSigned,
+                isDeprecated
             );
         } catch (Exception e) {
             // JSON parsing failed or unexpected response structure - server unreachable or wrong endpoint
@@ -281,7 +286,9 @@ public final class ApiService {
         int peBasePing,
         int peTotalPing,
         String modVersion,
-        boolean serverUnreachable
+        boolean serverUnreachable,
+        boolean isSigned,
+        boolean isDeprecated
     ) {
         public boolean isValid() {
             return isConnected && isHashCorrect;
@@ -296,11 +303,11 @@ public final class ApiService {
         }
 
         public static PlayerValidationResult invalid() {
-            return new PlayerValidationResult(false, false, false, "unknown", "", "", "", 0, "unknown", 0, 0, 0, "", false);
+            return new PlayerValidationResult(false, false, false, "unknown", "", "", "", 0, "unknown", 0, 0, 0, "", false, false, false);
         }
 
         public static PlayerValidationResult unreachable() {
-            return new PlayerValidationResult(false, false, false, "unknown", "", "", "", 0, "unknown", 0, 0, 0, "", true);
+            return new PlayerValidationResult(false, false, false, "unknown", "", "", "", 0, "unknown", 0, 0, 0, "", true, false, false);
         }
     }
 

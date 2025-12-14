@@ -36,6 +36,7 @@ public class CryptoHandler {
     private String currentServerAddress = "";
     private final String modVersion;
     private volatile boolean isHashApproved = false;
+    private volatile boolean isVersionDeprecated = false;
     private volatile boolean hashApprovalInProgress = false;
 
     // Rate limiting state
@@ -86,6 +87,7 @@ public class CryptoHandler {
                     response.version().isBlank() ||
                     response.version().equalsIgnoreCase("unknown") ||
                     response.version().equals(modVersion);
+                isVersionDeprecated = response.deprecated();
                 boolean approved = response.isValid() && signatureValid && versionOk;
                 isHashApproved = approved;
                 hashApprovalInProgress = false;
@@ -96,6 +98,7 @@ public class CryptoHandler {
             .exceptionally(ex -> {
                 isHashApproved = false;
                 hashApprovalInProgress = false;
+                isVersionDeprecated = false;
                 return null;
             });
     }
@@ -437,6 +440,10 @@ public class CryptoHandler {
 
     public PlayerAttestation getCurrentAttestation() {
         return currentAttestation;
+    }
+
+    public boolean isCurrentVersionDeprecated() {
+        return isVersionDeprecated;
     }
 
     void setKey(String reconstructedKey) {

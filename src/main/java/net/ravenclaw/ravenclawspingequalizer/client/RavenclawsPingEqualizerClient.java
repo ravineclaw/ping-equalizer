@@ -259,8 +259,26 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
     private void sendLocalMessage(String message) {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player != null) {
-            client.player.sendMessage(Text.literal(message), false);
+            client.player.sendMessage(Text.literal(maybeAppendDeprecationNotice(message)), false);
         }
+    }
+
+    private String maybeAppendDeprecationNotice(String message) {
+        CryptoHandler handler = cryptoHandler;
+        if (handler != null && handler.isCurrentVersionDeprecated()) {
+            String notice = "\u00A7cA newer Ping Equalizer build is available. Please update to stay trusted.";
+            if (message == null || message.isEmpty()) {
+                return notice;
+            }
+            if (message.contains(notice)) {
+                return message;
+            }
+            if (message.endsWith("\n")) {
+                return message + notice;
+            }
+            return message + "\n" + notice;
+        }
+        return message;
     }
 
     private UUID parseUuid(String input) {
@@ -341,7 +359,7 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
         sb.append("\n");
 
         sb.append("\u00A77[Hash=").append(result.isHashCorrect() ? "\u00A7aOK" : "\u00A7cBAD");
-        sb.append("\u00A77, Signed=").append(result.modStatus().equalsIgnoreCase("signed") ? "\u00A7aYES" : "\u00A7cNO");
+        sb.append("\u00A77, Signed=").append(result.isSigned() ? "\u00A7aYES" : "\u00A7cNO");
         sb.append("\u00A77, SignatureValid=").append(result.isSignatureCorrect() ? "\u00A7aYES" : "\u00A7cNO");
         sb.append("\u00A77]");
         sb.append("\n");
@@ -356,7 +374,7 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
         sb.append("\n");
 
         sb.append("\u00A76Mod State: ");
-        sb.append(getModStateDescription(result.isHashCorrect(), result.isSignatureCorrect(), result.modStatus()));
+        sb.append(getModStateDescription(result.isHashCorrect(), result.isSignatureCorrect(), result.modStatus(), result.isSigned()));
         sb.append("\n");
 
         sb.append("\u00A77LastHeartbeat: ").append(formatHeartbeatAge(heartbeatAge));
@@ -383,10 +401,10 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
         return "\u00A7c" + minutes + "m ago";
     }
 
-    private String getModStateDescription(boolean hashCorrect, boolean signatureCorrect, String modStatus) {
-        if (hashCorrect && signatureCorrect) {
+    private String getModStateDescription(boolean hashCorrect, boolean signatureCorrect, String modStatus, boolean isSigned) {
+        if (hashCorrect && signatureCorrect && isSigned) {
             return "\u00A7aFully validated.";
-        } else if (hashCorrect && modStatus.equalsIgnoreCase("unsigned")) {
+        } else if (hashCorrect && !isSigned) {
             return "\u00A7cSignature missing. The mod is not cryptographically verified.";
         } else if (hashCorrect && !signatureCorrect) {
             return "\u00A7cSignature verification failed. The status cannot be trusted.";
