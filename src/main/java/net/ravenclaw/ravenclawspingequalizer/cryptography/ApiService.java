@@ -497,8 +497,58 @@ public final class ApiService {
         if (!lowerScheme.equals("http") && !lowerScheme.equals("https")) {
             return null;
         }
-        if (uri.getHost() == null && uri.getAuthority() == null) {
+
+        String host = uri.getHost();
+        if (host == null) {
+            String authority = uri.getAuthority();
+            if (authority != null && !authority.isBlank()) {
+                String auth = authority;
+                int at = auth.lastIndexOf('@');
+                if (at >= 0) {
+                    auth = auth.substring(at + 1);
+                }
+                if (auth.startsWith("[")) {
+                    int end = auth.indexOf(']');
+                    if (end > 0) {
+                        host = auth.substring(0, end + 1);
+                    }
+                } else {
+                    int colon = auth.indexOf(':');
+                    host = colon >= 0 ? auth.substring(0, colon) : auth;
+                }
+            }
+        }
+        if (host == null || host.isBlank()) {
             return null;
+        }
+
+        if (lowerScheme.equals("http")) {
+            String lowerHost = host.toLowerCase();
+            boolean allowHttp = false;
+
+            if (lowerHost.equals("localhost") || lowerHost.equals("127.0.0.1") || lowerHost.equals("0.0.0.0") ||
+                lowerHost.equals("::1") || lowerHost.equals("[::1]")) {
+                allowHttp = true;
+            } else if (lowerHost.matches("\\d{1,3}(?:\\.\\d{1,3}){3}")) {
+                String[] parts = lowerHost.split("\\.");
+                int a = Integer.parseInt(parts[0]);
+                int b = Integer.parseInt(parts[1]);
+                int c = Integer.parseInt(parts[2]);
+                int d = Integer.parseInt(parts[3]);
+                boolean valid = a >= 0 && a <= 255 && b >= 0 && b <= 255 && c >= 0 && c <= 255 && d >= 0 && d <= 255;
+                if (valid) {
+                    boolean rfc1918 = (a == 10) ||
+                        (a == 172 && b >= 16 && b <= 31) ||
+                        (a == 192 && b == 168);
+                    boolean loopback = a == 127;
+                    boolean linkLocal = a == 169 && b == 254;
+                    allowHttp = rfc1918 || loopback || linkLocal;
+                }
+            }
+
+            if (!allowHttp) {
+                return null;
+            }
         }
         return candidate;
     }
