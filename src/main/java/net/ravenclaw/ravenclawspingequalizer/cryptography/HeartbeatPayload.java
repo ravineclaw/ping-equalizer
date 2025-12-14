@@ -1,23 +1,21 @@
 package net.ravenclaw.ravenclawspingequalizer.cryptography;
 
-import com.google.gson.annotations.SerializedName;
-
 public record HeartbeatPayload(
-        @SerializedName("modHash") String modHash,
-        @SerializedName("playerUuid") String playerUuid,
-        @SerializedName("username") String username,
-        @SerializedName("timestamp") long timestamp,
-        @SerializedName("currentServer") String currentServer,
-        @SerializedName("modStatus") String modStatus,
-        @SerializedName("modVersion") String modVersion,
-        @SerializedName("minecraftProof") String minecraftProof,
-        @SerializedName("serverId") String serverId,
-        @SerializedName("signature") String signature,
-        @SerializedName("isSigned") boolean isSigned,
-        @SerializedName("peMode") String peMode,
-        @SerializedName("peDelay") int peDelay,
-        @SerializedName("peBasePing") int peBasePing,
-        @SerializedName("peTotalPing") int peTotalPing
+        String modHash,
+        String playerUuid,
+        String username,
+        long timestamp,
+        String currentServer,
+        String modStatus,
+        String modVersion,
+        String minecraftProof,
+        String serverId,
+        String signature,
+        boolean isSigned,
+        String peMode,
+        int peDelay,
+        int peBasePing,
+        int peTotalPing
 ) {
     public static HeartbeatPayload create(
             String modHash,

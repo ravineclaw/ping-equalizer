@@ -1,10 +1,7 @@
 package net.ravenclaw.ravenclawspingequalizer.client;
 
-import java.util.ArrayDeque;
-import java.util.Deque;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
 
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
@@ -19,9 +16,6 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.PlayerListEntry;
-import net.minecraft.network.message.ChatVisibility;
-import net.minecraft.network.packet.c2s.common.ClientOptionsC2SPacket;
-import net.minecraft.network.packet.c2s.common.SyncedClientOptions;
 import net.minecraft.text.Text;
 import net.ravenclaw.ravenclawspingequalizer.PingEqualizerState;
 import net.ravenclaw.ravenclawspingequalizer.cryptography.ApiService;
@@ -29,14 +23,7 @@ import net.ravenclaw.ravenclawspingequalizer.cryptography.CryptoHandler;
 
 public class RavenclawsPingEqualizerClient implements ClientModInitializer {
 
-    private static final long SPOOF_SEND_DELAY_MS = 75L;
-    private static final long SPOOF_RESTORE_DELAY_MS = 400L;
-
     private String lastMessage = "";
-    private final Deque<String> pendingAnnouncements = new ArrayDeque<>();
-    private boolean spoofInProgress = false;
-    private int announcementEpoch = 0;
-    private int tickCounter = 0;
 
     public static CryptoHandler cryptoHandler;
 
@@ -48,26 +35,19 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             PingEqualizerState.getInstance().tick(client);
             cryptoHandler.tick();
-            processPendingAnnouncements(client);
-
-            tickCounter++;
-            if (tickCounter >= 1200) {
-                tickCounter = 0;
-            }
         });
 
         ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> {
-            resetAnnouncementState();
+            lastMessage = "";
             if (handler.getServerInfo() != null) {
                 cryptoHandler.setCurrentServer(handler.getServerInfo().address);
             } else {
                 cryptoHandler.setCurrentServer("");
             }
-            announceStatusOnServerChange(client);
         });
 
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
-            resetAnnouncementState();
+            lastMessage = "";
             cryptoHandler.setCurrentServer("");
         });
 
@@ -180,101 +160,13 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
         });
     }
 
-    private void resetAnnouncementState() {
-        announcementEpoch++;
-        lastMessage = "";
-        pendingAnnouncements.clear();
-        spoofInProgress = false;
-    }
-
     private void notifyStateChange(String message) {
         String finalMessage = maybeAppendDeprecationNotice(message);
         if (finalMessage.equals(lastMessage)) {
             return;
         }
         lastMessage = finalMessage;
-
-        pendingAnnouncements.addLast(finalMessage);
-        processPendingAnnouncements(MinecraftClient.getInstance());
-    }
-
-    private void announceStatusOnServerChange(MinecraftClient client) {
-        if (client == null || client.player == null) {
-            return;
-        }
-        PingEqualizerState state = PingEqualizerState.getInstance();
-        if (state.getMode() == PingEqualizerState.Mode.OFF) {
-            return;
-        }
-        // Use the normal announcement path so chat visibility spoofing still works.
-        notifyStateChange(state.getServerSwitchStatusMessage());
-    }
-
-    private void processPendingAnnouncements(MinecraftClient client) {
-        if (spoofInProgress || client.player == null) {
-            return;
-        }
-
-        String next = pendingAnnouncements.pollFirst();
-        if (next == null) {
-            return;
-        }
-
-        ChatVisibility currentVisibility = client.options.getChatVisibility().getValue();
-        if (currentVisibility == ChatVisibility.FULL) {
-            client.player.networkHandler.sendChatMessage(next);
-            processPendingAnnouncements(client);
-            return;
-        }
-
-        spoofInProgress = true;
-        final int epoch = announcementEpoch;
-        SyncedClientOptions originalOptions = client.options.getSyncedOptions();
-        SyncedClientOptions forcedOptions = copyWithVisibility(originalOptions, ChatVisibility.FULL);
-
-        client.player.networkHandler.sendPacket(new ClientOptionsC2SPacket(forcedOptions));
-
-        CompletableFuture.delayedExecutor(SPOOF_SEND_DELAY_MS, TimeUnit.MILLISECONDS).execute(() ->
-                client.execute(() -> {
-                    if (epoch != announcementEpoch) {
-                        return;
-                    }
-                    if (client.player == null) {
-                        spoofInProgress = false;
-                        return;
-                    }
-
-                    client.player.networkHandler.sendChatMessage(next);
-
-                    CompletableFuture.delayedExecutor(SPOOF_RESTORE_DELAY_MS, TimeUnit.MILLISECONDS).execute(() ->
-                            client.execute(() -> {
-                                if (client.player == null) {
-                                    spoofInProgress = false;
-                                    processPendingAnnouncements(client);
-                                    return;
-                                }
-
-                                SyncedClientOptions restoreOptions = client.options.getSyncedOptions();
-                                client.player.networkHandler.sendPacket(new ClientOptionsC2SPacket(restoreOptions));
-                                spoofInProgress = false;
-                                processPendingAnnouncements(client);
-                            })
-                    );
-                })
-        );
-    }
-
-    private static SyncedClientOptions copyWithVisibility(SyncedClientOptions base, ChatVisibility visibility) {
-        return new SyncedClientOptions(
-                base.language(),
-                base.viewDistance(),
-                visibility,
-                base.chatColorsEnabled(),
-                base.playerModelParts(),
-                base.mainArm(),
-                base.filtersText(),
-                base.allowsServerListing()
-        );
+        sendLocalMessage(finalMessage);
     }
 
     private void sendLocalMessage(String message) {

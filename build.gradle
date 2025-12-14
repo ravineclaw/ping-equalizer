@@ -1,33 +1,6 @@
-import net.ravenclaw.StringObfuscatorPlugin
-
-buildscript {
-    repositories {
-        mavenCentral()
-    }
-    dependencies {
-        classpath 'com.guardsquare:proguard-gradle:7.4.1'
-    }
-}
-
 plugins {
     id 'fabric-loom' version '1.13.6'
     id 'maven-publish'
-}
-
-// Apply the string obfuscation plugin
-apply plugin: net.ravenclaw.StringObfuscatorPlugin
-
-// Configure string obfuscation based on build task
-// Default: disabled (plain strings for development)
-stringObfuscation {
-    // Enabled when:
-    // 1. -PobfuscateStrings is passed
-    // 2. buildObfuscated task is run
-    // 3. buildAggressive task is run
-    // 4. runClient task is run
-    enabled = project.hasProperty('obfuscateStrings') || gradle.startParameter.taskNames.any { taskName ->
-        taskName == 'buildObfuscated' || taskName == 'buildAggressive' || taskName == 'buildAgressive' || taskName == 'obfuscateJar' || taskName == 'runClient'
-    }
 }
 
 version = project.mod_version
@@ -37,23 +10,19 @@ base {
     archivesName = project.archives_base_name
 }
 
+def obfuscationScript = file("scripts/obfuscation.gradle")
+if (obfuscationScript.exists()) {
+    apply from: obfuscationScript
+} else {
+    logger.lifecycle("Obfuscation script not found; skipping obfuscation-specific configuration.")
+}
+
 loom {
     mixin {
         defaultRefmapName = "ravenclawspingequalizer.refmap.json"
         useLegacyMixinAp = true
     }
 }
-
-afterEvaluate {
-    loom {
-        runs {
-            client {
-                source "build/libs/${project.archives_base_name}-${project.version}-obf.jar"
-            }
-        }
-    }
-}
-
 
 repositories {
 }
@@ -65,165 +34,6 @@ dependencies {
 
     modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
 }
-
-task generatePrivateKey {
-    def outputDir = file("build/generated/sources/key/java")
-    outputs.dir outputDir
-    
-    doLast {
-        def secretsFile = file("secrets.properties")
-        def privateKey = ""
-        if (secretsFile.exists()) {
-            def props = new Properties()
-            secretsFile.withInputStream { props.load(it) }
-            privateKey = props.getProperty("modPrivateKey", "")
-        } else {
-            println "secrets.properties not found, using dummy key"
-            privateKey = "DUMMY_KEY"
-        }
-
-        // Split into 32 shards with advanced obfuscation
-        int realShardCount = 32
-        def shards = []
-        def chunkSize = (int) Math.ceil(privateKey.length() / (double) realShardCount)
-        
-        // Rotation keys for advanced obfuscation (same as in PrivateKeyReconstructor)
-        def rotationKeys = [0x5A, 0x3C, 0x7B, 0x1E, 0x4F, 0x9D, 0x2B, 0x8C,
-                           0x6E, 0xA1, 0x3F, 0xD2, 0x59, 0x87, 0xC3, 0x14] as int[]
-        int rotKeyLen = rotationKeys.size()
-        
-        for (int i = 0; i < realShardCount; i++) {
-            int start = i * chunkSize
-            int end = Math.min(start + chunkSize, privateKey.length())
-            String chunk = (start < end) ? privateKey.substring(start, end) : ""
-            
-            // XOR Obfuscation with primary key (0x2A = 42)
-            char[] chars = chunk.toCharArray()
-            for (int j = 0; j < chars.length; j++) {
-                int charInt = (int) chars[j]
-                chars[j] = (char) (charInt ^ 0x2A)
-            }
-            
-            // XOR with rotation key for additional security
-            for (int j = 0; j < chars.length; j++) {
-                int keyIndex = (j + i) % rotKeyLen
-                int charInt = (int) chars[j]
-                chars[j] = (char) (charInt ^ rotationKeys[keyIndex])
-            }
-
-            // Preserve raw byte values to keep obfuscation reversible
-            byte[] shardBytes = new byte[chars.length]
-            for (int k = 0; k < chars.length; k++) {
-                shardBytes[k] = (byte) chars[k]
-            }
-            
-            shards.add(shardBytes)
-        }
-
-        // Deterministic shuffle order derived from the key material
-        // Use a deterministic seed derived only from the key material so shard order is stable
-        def rng = new java.util.Random(
-                java.util.Arrays.hashCode(privateKey.getBytes('UTF-8')))
-        def indices = (0..<realShardCount).toList()
-        java.util.Collections.shuffle(indices, rng)
-        def permuted = []
-        indices.each { permuted.add(shards[it]) }
-
-        // Add decoy shards to increase noise
-        int decoyCount = 12
-        def secureRandom = java.security.SecureRandom.getInstanceStrong()
-        for (int i = 0; i < decoyCount; i++) {
-            byte[] noise = new byte[Math.max(chunkSize, 4)]
-            secureRandom.nextBytes(noise)
-            permuted.add(noise)
-        }
-
-        // Prepare checksum to validate reconstruction
-        def md = java.security.MessageDigest.getInstance("SHA-256")
-        md.update(privateKey.getBytes('UTF-8'))
-        md.update("::PINGEQUALIZER::".getBytes('UTF-8'))
-        def checksum = md.digest().collect { String.format("%02x", it) }.join()
-
-        def encoder = java.util.Base64.getEncoder()
-        def shardLiterals = permuted.collect { bytes ->
-            byte[] data = (byte[]) bytes
-            "\"${encoder.encodeToString(data)}\""
-        }.join(",\n        ")
-        def permutationLiteral = indices.collect { "${it}" }.join(", ")
-
-        def packageDir = file("${outputDir}/net/ravenclaw/ravenclawspingequalizer/cryptography")
-        packageDir.mkdirs()
-        def outputFile = file("${packageDir}/PrivateKeyStorage.java")
-
-        def content = """package net.ravenclaw.ravenclawspingequalizer.cryptography;
-
-/**
- * Securely stores the private key in distributed obfuscated shards.
- * Note: Crypto is disabled at runtime, but shards remain available for future use.
- */
-public final class PrivateKeyStorage {
-    private static final String[] SHARDS = new String[] {
-        ${shardLiterals}
-    };
-    private static final int[] PERMUTATION = new int[] { ${permutationLiteral} };
-    private static final int REAL_SHARD_COUNT = ${realShardCount};
-    private static final String EXPECTED_CHECKSUM = "${checksum}";
-
-    private PrivateKeyStorage() {}
-
-    /**
-     * Retrieves the shard array for reconstruction.
-     * @return Array of obfuscated shards
-     */
-    public static String[] getShards() {
-        return SHARDS.clone();
-    }
-
-    public static int[] getPermutation() {
-        return PERMUTATION.clone();
-    }
-
-    public static int getRealShardCount() {
-        return REAL_SHARD_COUNT;
-    }
-
-    public static String getExpectedChecksum() {
-        return EXPECTED_CHECKSUM;
-    }
-
-    /**
-     * Gets a specific shard by index.
-     * @param index Shard index (0-31)
-     * @return Encrypted shard string
-     */
-    public static String getShard(int index) {
-        if (index < 0 || index >= SHARDS.length) {
-            return "";
-        }
-        return SHARDS[index];
-    }
-
-    /**
-     * Gets total number of shards.
-     * @return Number of shards
-     */
-    public static int getShardCount() {
-        return SHARDS.length;
-    }
-}
-"""
-        outputFile.text = content
-    }
-}
-
-compileJava.dependsOn generatePrivateKey
-afterEvaluate {
-    tasks.named("sourcesJar") { 
-        dependsOn generatePrivateKey
-        dependsOn 'generateObfuscatedStrings'
-    }
-}
-sourceSets.main.java.srcDir "build/generated/sources/key/java"
 
 processResources {
     inputs.property "version", project.version
@@ -269,150 +79,4 @@ publishing {
 
     repositories {
     }
-}
-
-task obfuscateJar(type: proguard.gradle.ProGuardTask) {
-    dependsOn tasks.remapJar
-    
-    // Input: The remapped jar
-    injars tasks.remapJar.archiveFile
-    
-    // Output: The obfuscated jar
-    outjars layout.buildDirectory.file("libs/${project.archives_base_name}-${project.version}-obf.jar")
-    
-    // Libraries
-    libraryjars sourceSets.main.compileClasspath
-    libraryjars "${System.getProperty('java.home')}/jmods/java.base.jmod"
-    libraryjars "${System.getProperty('java.home')}/jmods/java.desktop.jmod"
-    libraryjars "${System.getProperty('java.home')}/jmods/java.logging.jmod"
-    
-    // Target Java 21 - forces ProGuard to generate proper stackmap frames
-    target '21'
-
-    configuration 'proguard.conf'
-}
-
-task buildAggressive {
-    dependsOn build
-    dependsOn obfuscateJar
-}
-
-// Backwards-compatible alias for the commonly mistyped task name
-tasks.register("buildAgressive") {
-    group = 'build'
-    description = 'Alias for buildAggressive'
-    dependsOn buildAggressive
-}
-
-// ============================================================================
-// BUILD TASKS SUMMARY:
-// ============================================================================
-// ./gradlew build              - Normal build, NO string obfuscation (development)
-// ./gradlew buildObfuscated    - Build with string obfuscation enabled
-// ./gradlew buildAggressive    - Build with string obfuscation + ProGuard
-// ============================================================================
-
-task buildObfuscated {
-    description = 'Build with compile-time string obfuscation enabled'
-    group = 'build'
-    
-    doFirst {
-        // Force regeneration with obfuscation
-        project.delete("build/generated/sources/strings")
-    }
-    
-    dependsOn build
-}
-
-// Quick correctness check: reconstructed key must match secrets.properties
-task checkPrivateKey {
-    group = 'verification'
-    description = 'Verifies that the obfuscated key reconstruction matches the source key in secrets.properties'
-    dependsOn classes
-
-    doLast {
-        def secretsFile = file("secrets.properties")
-        if (!secretsFile.exists()) {
-            println "secrets.properties not found; skipping key verification."
-            return
-        }
-        def props = new Properties()
-        secretsFile.withInputStream { props.load(it) }
-        def expected = props.getProperty("modPrivateKey", "").trim()
-        if (!expected) {
-            throw new GradleException("modPrivateKey missing in secrets.properties")
-        }
-
-        def urls = sourceSets.main.runtimeClasspath.files.collect { it.toURI().toURL() }
-        def loader = new URLClassLoader(urls as URL[], (ClassLoader) null)
-        def cls = loader.loadClass("net.ravenclaw.ravenclawspingequalizer.cryptography.PrivateKeyReconstructor")
-        def actual = (String) cls.getMethod("reconstructPrivateKey").invoke(null)
-        def rawMethod = cls.getDeclaredMethod("performReconstruction")
-        rawMethod.setAccessible(true)
-        def raw = (String) rawMethod.invoke(null)
-
-        if (!expected.equals(actual)) {
-            def sha = { String s ->
-                def md = java.security.MessageDigest.getInstance("SHA-256")
-                md.update(s.getBytes("UTF-8"))
-                md.digest().collect { String.format("%02x", it) }.join()
-            }
-            println "Expected len=${expected.length()}, sha256=${sha(expected)}"
-            println "Actual   len=${actual.length()}, sha256=${sha(actual)}"
-            println "RawRecon len=${raw.length()}, sha256=${sha(raw)}"
-            def headExpected = expected.substring(0, Math.min(32, expected.length()))
-            def tailExpected = expected.substring(Math.max(0, expected.length() - 32))
-            def headActual = actual.substring(0, Math.min(32, actual.length()))
-            def tailActual = actual.substring(Math.max(0, actual.length() - 32))
-            def headRaw = raw.substring(0, Math.min(32, raw.length()))
-            def tailRaw = raw.substring(Math.max(0, raw.length() - 32))
-            println "Expected preview: ${headExpected}...${tailExpected}"
-            println "Actual preview  : ${headActual}...${tailActual}"
-            println "Raw preview     : ${headRaw}...${tailRaw}"
-            throw new GradleException("Reconstructed key does not match secrets.properties")
-        }
-
-        println "Private key reconstruction matches secrets.properties"
-    }
-}
-
-// Clean generated sources when doing a full clean
-clean.doFirst {
-    delete "build/generated/sources/strings"
-}
-
-// ============================================================================
-// CRYPTO TEST TASKS
-// ============================================================================
-
-task runTestServer(type: JavaExec) {
-    description = 'Run the crypto test server'
-    group = 'verification'
-    
-    classpath = sourceSets.test.runtimeClasspath + sourceSets.main.runtimeClasspath
-    mainClass = 'net.ravenclaw.ravenclawspingequalizer.cryptography.CryptoTestServer'
-    
-    standardInput = System.in
-    
-    dependsOn testClasses
-}
-
-task runTestClient(type: JavaExec) {
-    description = 'Run the crypto test client'
-    group = 'verification'
-    
-    classpath = sourceSets.test.runtimeClasspath + sourceSets.main.runtimeClasspath
-    mainClass = 'net.ravenclaw.ravenclawspingequalizer.cryptography.CryptoTestClient'
-    
-    standardInput = System.in
-    
-    dependsOn testClasses
-}
-
-task launch {
-    description = 'Build with obfuscation and launch the Minecraft client'
-    group = 'fabric'
-
-    dependsOn buildAggressive
-    dependsOn 'runClient'
 }

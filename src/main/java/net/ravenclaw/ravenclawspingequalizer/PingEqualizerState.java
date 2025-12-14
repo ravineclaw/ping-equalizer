@@ -48,6 +48,9 @@ public class PingEqualizerState {
 
     private long lastMeasuredRtt = -1;
 
+    private boolean integratedDelayLocked = false;
+    private long integratedLockedDelayMs = 0;
+
     private static final class PendingPing {
         long appliedDelayMs;
         long actualSendTime = -1;
@@ -66,6 +69,7 @@ public class PingEqualizerState {
         preciseDelay = 0;
         resetMeasurementState();
         resetMatchSmoother();
+        resetIntegratedLock();
     }
 
     public void setAddPing(int amount) {
@@ -74,6 +78,7 @@ public class PingEqualizerState {
         preciseDelay = addAmount;
         currentDelayMs = quantizeDelayMs(preciseDelay);
         lastDelayUpdateTimeMs = Util.getMeasuringTimeMs();
+        resetIntegratedLock();
     }
 
     public void setTotalPing(int target) {
@@ -95,6 +100,7 @@ public class PingEqualizerState {
             currentDelayMs = 0;
         }
         lastDelayUpdateTimeMs = now;
+        resetIntegratedLock();
 
         ClientPlayNetworkHandler handler = client == null ? null : client.getNetworkHandler();
         if (handler != null) {
@@ -106,6 +112,7 @@ public class PingEqualizerState {
         currentMode = Mode.MATCH;
         matchPlayerName = playerName == null ? "" : playerName.trim();
         resetMatchSmoother();
+        resetIntegratedLock();
 
         MinecraftClient client = MinecraftClient.getInstance();
         ClientPlayNetworkHandler handler = client == null ? null : client.getNetworkHandler();
@@ -123,6 +130,7 @@ public class PingEqualizerState {
     public void prepareForNewPlaySession() {
         resetMeasurementState();
         resetMatchSmoother();
+        resetIntegratedLock();
         if (currentMode == Mode.ADD) {
             preciseDelay = addAmount;
             currentDelayMs = quantizeDelayMs(preciseDelay);
@@ -271,6 +279,16 @@ public class PingEqualizerState {
             return;
         }
 
+        boolean integratedServer = client.isIntegratedServerRunning();
+        if (!integratedServer && integratedDelayLocked) {
+            resetIntegratedLock();
+        }
+
+        if (integratedServer && integratedDelayLocked) {
+            currentDelayMs = integratedLockedDelayMs;
+            return;
+        }
+
         long now = Util.getMeasuringTimeMs();
 
         requestPingIfNeeded(handler, false);
@@ -282,6 +300,15 @@ public class PingEqualizerState {
         int basePing = getCalibratedBase();
         int targetPing = computeTargetPing(handler, basePing);
         if (targetPing <= 0) {
+            return;
+        }
+
+        if (integratedServer) {
+            long targetDelay = Math.max(0, targetPing - basePing);
+            preciseDelay = targetDelay;
+            currentDelayMs = quantizeDelayMs(preciseDelay);
+            integratedLockedDelayMs = currentDelayMs;
+            integratedDelayLocked = true;
             return;
         }
 
@@ -470,5 +497,11 @@ public class PingEqualizerState {
         smoothedBasePing = 0;
         lastBasePingSampleTime = 0;
         lastMeasuredRtt = -1;
+        resetIntegratedLock();
+    }
+
+    private void resetIntegratedLock() {
+        integratedDelayLocked = false;
+        integratedLockedDelayMs = 0;
     }
 }
