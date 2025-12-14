@@ -1,5 +1,6 @@
 package net.ravenclaw.ravenclawspingequalizer;
 
+import java.util.Arrays;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -27,6 +28,7 @@ public class PingEqualizerState {
     private static final int MATCH_TARGET_MIN_STEP_MS = 1;
     private static final int MATCH_TARGET_MAX_STEP_MS = 75;
     private static final double MATCH_TARGET_RATE_MS_PER_SECOND = 25.0;
+    private static final int BASE_FILTER_WINDOW = 5;
 
     private Mode currentMode = Mode.OFF;
     private int addAmount = 0;
@@ -48,8 +50,9 @@ public class PingEqualizerState {
 
     private long lastMeasuredRtt = -1;
 
-    private boolean integratedDelayLocked = false;
-    private long integratedLockedDelayMs = 0;
+    private final int[] baseEstimateWindow = new int[BASE_FILTER_WINDOW];
+    private int baseEstimateCount = 0;
+    private int baseEstimateIndex = 0;
 
     private static final class PendingPing {
         long appliedDelayMs;
@@ -69,7 +72,6 @@ public class PingEqualizerState {
         preciseDelay = 0;
         resetMeasurementState();
         resetMatchSmoother();
-        resetIntegratedLock();
     }
 
     public void setAddPing(int amount) {
@@ -78,7 +80,6 @@ public class PingEqualizerState {
         preciseDelay = addAmount;
         currentDelayMs = quantizeDelayMs(preciseDelay);
         lastDelayUpdateTimeMs = Util.getMeasuringTimeMs();
-        resetIntegratedLock();
     }
 
     public void setTotalPing(int target) {
@@ -100,7 +101,6 @@ public class PingEqualizerState {
             currentDelayMs = 0;
         }
         lastDelayUpdateTimeMs = now;
-        resetIntegratedLock();
 
         ClientPlayNetworkHandler handler = client == null ? null : client.getNetworkHandler();
         if (handler != null) {
@@ -112,7 +112,6 @@ public class PingEqualizerState {
         currentMode = Mode.MATCH;
         matchPlayerName = playerName == null ? "" : playerName.trim();
         resetMatchSmoother();
-        resetIntegratedLock();
 
         MinecraftClient client = MinecraftClient.getInstance();
         ClientPlayNetworkHandler handler = client == null ? null : client.getNetworkHandler();
@@ -130,7 +129,6 @@ public class PingEqualizerState {
     public void prepareForNewPlaySession() {
         resetMeasurementState();
         resetMatchSmoother();
-        resetIntegratedLock();
         if (currentMode == Mode.ADD) {
             preciseDelay = addAmount;
             currentDelayMs = quantizeDelayMs(preciseDelay);
@@ -179,15 +177,16 @@ public class PingEqualizerState {
         long totalAppliedForEstimate = totalRecordedDelay > 0 ? totalRecordedDelay : p.appliedDelayMs;
 
         long estimatedBase = Math.max(0, measuredRtt - totalAppliedForEstimate);
+        int filteredBase = pushBaseEstimate((int) estimatedBase);
 
-        if (estimatedBase <= 0) {
+        if (filteredBase <= 0) {
             awaitingBasePing = false;
             return;
         }
 
-        lastValidBasePing = (int) estimatedBase;
+        lastValidBasePing = filteredBase;
 
-        double candidate = estimatedBase;
+        double candidate = filteredBase;
         if (smoothedBasePing > 0) {
             double lo = smoothedBasePing - BASE_PING_MAX_STEP_MS;
             double hi = smoothedBasePing + BASE_PING_MAX_STEP_MS;
@@ -279,16 +278,6 @@ public class PingEqualizerState {
             return;
         }
 
-        boolean integratedServer = client.isIntegratedServerRunning();
-        if (!integratedServer && integratedDelayLocked) {
-            resetIntegratedLock();
-        }
-
-        if (integratedServer && integratedDelayLocked) {
-            currentDelayMs = integratedLockedDelayMs;
-            return;
-        }
-
         long now = Util.getMeasuringTimeMs();
 
         requestPingIfNeeded(handler, false);
@@ -300,15 +289,6 @@ public class PingEqualizerState {
         int basePing = getCalibratedBase();
         int targetPing = computeTargetPing(handler, basePing);
         if (targetPing <= 0) {
-            return;
-        }
-
-        if (integratedServer) {
-            long targetDelay = Math.max(0, targetPing - basePing);
-            preciseDelay = targetDelay;
-            currentDelayMs = quantizeDelayMs(preciseDelay);
-            integratedLockedDelayMs = currentDelayMs;
-            integratedDelayLocked = true;
             return;
         }
 
@@ -497,11 +477,21 @@ public class PingEqualizerState {
         smoothedBasePing = 0;
         lastBasePingSampleTime = 0;
         lastMeasuredRtt = -1;
-        resetIntegratedLock();
+        baseEstimateCount = 0;
+        baseEstimateIndex = 0;
     }
 
-    private void resetIntegratedLock() {
-        integratedDelayLocked = false;
-        integratedLockedDelayMs = 0;
+    private int pushBaseEstimate(int estimateMs) {
+        if (estimateMs <= 0) {
+            return -1;
+        }
+        baseEstimateWindow[baseEstimateIndex] = estimateMs;
+        baseEstimateIndex = (baseEstimateIndex + 1) % BASE_FILTER_WINDOW;
+        if (baseEstimateCount < BASE_FILTER_WINDOW) {
+            baseEstimateCount++;
+        }
+        int[] copy = Arrays.copyOf(baseEstimateWindow, baseEstimateCount);
+        Arrays.sort(copy);
+        return copy[baseEstimateCount / 2];
     }
 }
