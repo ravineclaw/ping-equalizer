@@ -107,7 +107,6 @@ public final class ApiService {
         });
     }
 
-    // Build the heartbeat JSON by hand to avoid any reflection/annotation reliance under obfuscation.
     private static String toHeartbeatJson(HeartbeatPayload payload) {
         StringBuilder sb = new StringBuilder(256);
         sb.append('{');
@@ -178,23 +177,17 @@ public final class ApiService {
         return out.toString();
     }
 
-    // HeartbeatPayload record moved to its own file
-
-
     public static CompletableFuture<PlayerValidationResult> validatePlayerByUuid(UUID playerUuid) {
         return CompletableFuture.supplyAsync(() -> {
             try {
                 String response = httpGetApiPath("/api/validate/" + playerUuid);
                 if (response == null) {
-                    // 404 - player not found but server is reachable
                     return PlayerValidationResult.invalid();
                 }
                 return parseValidationResponse(response);
             } catch (java.io.IOException e) {
-                // Network issues, timeouts, connection refused, unknown host, unexpected response codes
                 return PlayerValidationResult.unreachable();
             } catch (Exception e) {
-                // Other unexpected errors - treat as unreachable
                 return PlayerValidationResult.unreachable();
             }
         });
@@ -205,15 +198,12 @@ public final class ApiService {
             try {
                 String response = httpGetApiPath("/api/validate/" + URLEncoder.encode(username, StandardCharsets.UTF_8));
                 if (response == null) {
-                    // 404 - player not found but server is reachable
                     return PlayerValidationResult.invalid();
                 }
                 return parseValidationResponse(response);
             } catch (java.io.IOException e) {
-                // Network issues, timeouts, connection refused, unknown host, unexpected response codes
                 return PlayerValidationResult.unreachable();
             } catch (Exception e) {
-                // Other unexpected errors - treat as unreachable
                 return PlayerValidationResult.unreachable();
             }
         });
@@ -227,7 +217,6 @@ public final class ApiService {
         try {
             JsonObject json = JsonParser.parseString(response).getAsJsonObject();
 
-            // Check if the response has expected API fields - if not, we likely hit a non-API server
             if (!json.has("is_connected") && !json.has("uuid") && !json.has("username")) {
                 return PlayerValidationResult.unreachable();
             }
@@ -267,7 +256,6 @@ public final class ApiService {
                 isDeprecated
             );
         } catch (Exception e) {
-            // JSON parsing failed or unexpected response structure - server unreachable or wrong endpoint
             return PlayerValidationResult.unreachable();
         }
     }

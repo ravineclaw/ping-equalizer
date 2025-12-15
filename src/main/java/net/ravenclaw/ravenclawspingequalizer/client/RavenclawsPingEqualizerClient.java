@@ -180,13 +180,20 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
             return;
         }
         lastMessage = finalMessage;
-        sendLocalMessage(finalMessage);
+        sendRawLocalMessage(finalMessage);
     }
 
     private void sendLocalMessage(String message) {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player != null) {
             client.player.sendMessage(Text.literal(maybeAppendDeprecationNotice(message)), false);
+        }
+    }
+
+    private void sendRawLocalMessage(String message) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.player != null) {
+            client.player.sendMessage(Text.literal(message), false);
         }
     }
 

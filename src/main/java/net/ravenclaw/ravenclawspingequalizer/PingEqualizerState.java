@@ -363,7 +363,6 @@ public class PingEqualizerState {
             return String.format("Ping Equalizer: %s | Measuring base ping...", modeStr);
         }
 
-        // Use the estimated base ping for status message
         int base = (int) Math.round(smoothedBasePing);
         int added = (int) currentDelayMs;
         int total = base + added;

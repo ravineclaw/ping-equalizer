@@ -17,11 +17,9 @@ public class CryptoHandler {
 
     private static final int HEARTBEAT_INTERVAL_TICKS = 600;
 
-    // Rate limiting: max 100 heartbeats per minute
     private static final int MAX_HEARTBEATS_PER_MINUTE = 100;
     private static final long ONE_MINUTE_MS = 60_000;
 
-    // Anti-spam for commands: if more than 2 in a second, apply cooldown
     private static final int SPAM_THRESHOLD_COUNT = 2;
     private static final long SPAM_WINDOW_MS = 1000;
     private static final long SPAM_COOLDOWN_MS = 1000;
@@ -39,7 +37,6 @@ public class CryptoHandler {
     private volatile boolean isVersionDeprecated = false;
     private volatile boolean hashApprovalInProgress = false;
 
-    // Rate limiting state
     private final Deque<Long> heartbeatTimestamps = new ArrayDeque<>();
     private final Deque<Long> commandHeartbeatTimestamps = new ArrayDeque<>();
     private long spamCooldownUntil = 0;
@@ -103,7 +100,6 @@ public class CryptoHandler {
             });
     }
 
-    // Flag to prevent overlapping attestation requests
     private volatile boolean attestationInProgress = false;
 
     public void tick() {
@@ -118,12 +114,9 @@ public class CryptoHandler {
         }
     }
 
-    /**
-     * Generates attestation completely off the main thread to avoid frame drops.
-     */
     private void generateAttestationAsync() {
         if (attestationInProgress) {
-            return; // Don't start another if one is in progress
+            return;
         }
 
         MinecraftClient client = MinecraftClient.getInstance();
@@ -142,7 +135,6 @@ public class CryptoHandler {
         attestationInProgress = true;
         String serverId = generateRandomServerId();
 
-        // Run the blocking joinServer call off the main thread
         CompletableFuture.runAsync(() -> {
             try {
                 sessionService.joinServer(playerUuid, accessToken, serverId);
@@ -151,7 +143,6 @@ public class CryptoHandler {
                 return;
             }
 
-            // Now get the hasJoined response (also async)
             MojangApiClient.getHasJoinedResponse(username, serverId)
                 .thenAccept(mojangResponse -> {
                     attestationInProgress = false;
@@ -187,13 +178,11 @@ public class CryptoHandler {
             validateHashAsync();
         }
 
-        // 1. Generate timestamp ONCE
         long timestamp = System.currentTimeMillis();
 
         String signature = null;
         String modStatus = "unsigned";
 
-        // Only sign if the hash is approved; if the hash is wrong, always send an unsigned heartbeat.
         if (isHashApproved) {
             if (canSign && signingKey != null) {
                 signature = createAndSignHeartbeatPayload(timestamp);
@@ -214,7 +203,6 @@ public class CryptoHandler {
         int peBasePing = peState.getBasePing();
         int peTotalPing = peState.getTotalPing();
 
-        // 3. Pass the SAME timestamp to the payload
         HeartbeatPayload payload = HeartbeatPayload.create(
                 modHash,
                 currentAttestation,
@@ -226,7 +214,7 @@ public class CryptoHandler {
                 peDelay,
                 peBasePing,
                 peTotalPing,
-                timestamp // <--- Pass it here
+                timestamp
         );
 
         ApiService.sendHeartbeat(payload)
@@ -237,7 +225,6 @@ public class CryptoHandler {
                 });
     }
 
-    // Update this method to accept the timestamp
     private String createAndSignHeartbeatPayload(long timestamp) {
         StringBuilder payload = new StringBuilder();
         payload.append(modHash);
@@ -248,7 +235,7 @@ public class CryptoHandler {
         payload.append("|");
         payload.append(currentAttestation.getServerId());
         payload.append("|");
-        payload.append(timestamp); // <--- Use the passed timestamp
+        payload.append(timestamp);
 
         PrivateKey key = signingKey;
         if (key == null) {
@@ -281,7 +268,6 @@ public class CryptoHandler {
         boolean changed = !this.currentServerAddress.equals(newAddress);
         this.currentServerAddress = newAddress;
         if (changed) {
-            // Server join/leave: no cooldown, always send immediately (respects global rate limit only)
             triggerHeartbeatForServerChange();
         }
     }
@@ -290,15 +276,10 @@ public class CryptoHandler {
         return this.currentServerAddress;
     }
 
-    /**
-     * Checks if we can send a heartbeat within the global rate limit (100/minute).
-     * Also cleans up old timestamps.
-     */
     private boolean canSendHeartbeat() {
         long now = System.currentTimeMillis();
         long cutoff = now - ONE_MINUTE_MS;
 
-        // Remove timestamps older than 1 minute
         while (!heartbeatTimestamps.isEmpty() && heartbeatTimestamps.peekFirst() < cutoff) {
             heartbeatTimestamps.pollFirst();
         }
@@ -306,33 +287,23 @@ public class CryptoHandler {
         return heartbeatTimestamps.size() < MAX_HEARTBEATS_PER_MINUTE;
     }
 
-    /**
-     * Records a heartbeat timestamp for rate limiting.
-     */
     private void recordHeartbeat() {
         heartbeatTimestamps.addLast(System.currentTimeMillis());
     }
 
-    /**
-     * Checks if command heartbeats are being spammed.
-     * Returns true if spamming is detected.
-     */
     private boolean isCommandSpamming() {
         long now = System.currentTimeMillis();
 
-        // If we're in cooldown from previous spam
         if (now < spamCooldownUntil) {
             return true;
         }
 
         long cutoff = now - SPAM_WINDOW_MS;
 
-        // Remove timestamps older than spam window
         while (!commandHeartbeatTimestamps.isEmpty() && commandHeartbeatTimestamps.peekFirst() < cutoff) {
             commandHeartbeatTimestamps.pollFirst();
         }
 
-        // If we have more than threshold in the window, we're spamming
         if (commandHeartbeatTimestamps.size() >= SPAM_THRESHOLD_COUNT) {
             spamCooldownUntil = now + SPAM_COOLDOWN_MS;
             return true;
@@ -341,20 +312,13 @@ public class CryptoHandler {
         return false;
     }
 
-    /**
-     * Records a command heartbeat timestamp for spam detection.
-     */
     private void recordCommandHeartbeat() {
         commandHeartbeatTimestamps.addLast(System.currentTimeMillis());
     }
 
-    /**
-     * Triggers a heartbeat for server join/leave.
-     * No spam protection, only respects global rate limit.
-     */
     private void triggerHeartbeatForServerChange() {
         if (!canSendHeartbeat()) {
-            return; // Global rate limit hit
+            return;
         }
 
         recordHeartbeat();
@@ -368,7 +332,7 @@ public class CryptoHandler {
 
     public void triggerHeartbeatForCommand() {
         if (!canSendHeartbeat()) {
-            return; // Global rate limit hit
+            return;
         }
 
         recordHeartbeat();
@@ -380,16 +344,10 @@ public class CryptoHandler {
         }
     }
 
-    /**
-     * @deprecated Use triggerHeartbeatForCommand() instead
-     */
     public void triggerImmediateHeartbeat() {
         triggerHeartbeatForServerChange();
     }
 
-    /**
-     * @deprecated Use triggerHeartbeatForCommand() instead
-     */
     public boolean triggerImmediateHeartbeatWithCooldown() {
         if (!beginCommandExecution()) {
             return false;
