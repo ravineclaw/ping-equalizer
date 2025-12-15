@@ -75,18 +75,27 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                                                 if (!ensureCommandAllowed()) {
                                                     return 0;
                                                 }
-                                                int amount = IntegerArgumentType.getInteger(ctx, "amount");
-                                                if (amount == 0) {
-                                                    PingEqualizerState.getInstance().setOff();
-                                                    notifyStateChange("Ping Equalizer: Disabled.");
-                                                } else {
-                                                    PingEqualizerState.getInstance().setAddPing(amount);
-                                                    notifyStateChange("Ping Equalizer: Added " + amount + "ms delay.");
-                                                }
-                                                cryptoHandler.triggerHeartbeatForCommand();
-                                                return 1;
-                                            })
-                                    )
+                        int amount = IntegerArgumentType.getInteger(ctx, "amount");
+                        PingEqualizerState state = PingEqualizerState.getInstance();
+                        if (amount == 0) {
+                            if (state.isOffMode()) {
+                                logNoChange("Ping Equalizer already disabled.");
+                            } else {
+                                state.setOff();
+                                notifyStateChange("Ping Equalizer: Disabled.");
+                            }
+                        } else {
+                            if (state.isAddingDelay(amount)) {
+                                logNoChange("Ping Equalizer already adding " + amount + "ms delay.");
+                            } else {
+                                state.setAddPing(amount);
+                                notifyStateChange("Ping Equalizer: Added " + amount + "ms delay.");
+                            }
+                        }
+                        cryptoHandler.triggerHeartbeatForCommand();
+                        return 1;
+                    })
+            )
                             )
                             .then(ClientCommandManager.literal("total")
                                     .then(ClientCommandManager.argument("amount", IntegerArgumentType.integer(0))
@@ -94,18 +103,27 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                                                 if (!ensureCommandAllowed()) {
                                                     return 0;
                                                 }
-                                                int amount = IntegerArgumentType.getInteger(ctx, "amount");
-                                                if (amount == 0) {
-                                                    PingEqualizerState.getInstance().setOff();
-                                                    notifyStateChange("Ping Equalizer: Disabled.");
-                                                } else {
-                                                    PingEqualizerState.getInstance().setTotalPing(amount);
-                                                    notifyStateChange("Ping Equalizer: Total ping set to " + amount + "ms.");
-                                                }
-                                                cryptoHandler.triggerHeartbeatForCommand();
-                                                return 1;
-                                            })
-                                    )
+                        int amount = IntegerArgumentType.getInteger(ctx, "amount");
+                        PingEqualizerState totalState = PingEqualizerState.getInstance();
+                        if (amount == 0) {
+                            if (totalState.isOffMode()) {
+                                logNoChange("Ping Equalizer already disabled.");
+                            } else {
+                                totalState.setOff();
+                                notifyStateChange("Ping Equalizer: Disabled.");
+                            }
+                        } else {
+                            if (totalState.isTotalPingTarget(amount)) {
+                                logNoChange("Ping Equalizer already targeting " + amount + "ms total ping.");
+                            } else {
+                                totalState.setTotalPing(amount);
+                                notifyStateChange("Ping Equalizer: Total ping set to " + amount + "ms.");
+                            }
+                        }
+                        cryptoHandler.triggerHeartbeatForCommand();
+                        return 1;
+                    })
+            )
                             )
                             .then(ClientCommandManager.literal("status")
                                     .executes(ctx -> {
@@ -119,8 +137,13 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                                         if (!ensureCommandAllowed()) {
                                             return 0;
                                         }
-                                        PingEqualizerState.getInstance().setOff();
-                                        notifyStateChange("Ping Equalizer: Disabled.");
+                                        PingEqualizerState offState = PingEqualizerState.getInstance();
+                                        if (offState.isOffMode()) {
+                                            logNoChange("Ping Equalizer already disabled.");
+                                        } else {
+                                            offState.setOff();
+                                            notifyStateChange("Ping Equalizer: Disabled.");
+                                        }
                                         cryptoHandler.triggerHeartbeatForCommand();
                                         return 1;
                                     })
@@ -195,6 +218,10 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
         if (client.player != null) {
             client.player.sendMessage(Text.literal(message), false);
         }
+    }
+
+    private void logNoChange(String message) {
+        sendLocalMessage(message);
     }
 
     private boolean ensureCommandAllowed() {

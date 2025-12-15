@@ -394,6 +394,18 @@ public class PingEqualizerState {
         return lastValidBasePing + (int) currentDelayMs;
     }
 
+    public boolean isOffMode() {
+        return currentMode == Mode.OFF;
+    }
+
+    public boolean isAddingDelay(int amount) {
+        return currentMode == Mode.ADD && addAmount == Math.max(0, amount);
+    }
+
+    public boolean isTotalPingTarget(int amount) {
+        return currentMode == Mode.TOTAL && totalTarget == Math.max(0, amount);
+    }
+
     public long getOutboundDelayPortion() {
         return currentDelayMs / 2;
     }
