@@ -298,7 +298,7 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
     }
 
     private String getDeprecationNotice() {
-        return "\u00A7cA newer Ping Equalizer build is available. Please update to stay trusted.";
+        return "\u00A7cNew Ping Equalizer version available, please update on modrinth.";
     }
 
     private void showClientDeprecationWarning() {
