@@ -9,6 +9,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.mojang.brigadier.arguments.IntegerArgumentType;
+import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.tree.LiteralCommandNode;
 
 import net.fabricmc.api.ClientModInitializer;
@@ -33,6 +34,7 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
     private String lastMessage = "";
     private final Deque<String> pendingAnnouncements = new ArrayDeque<>();
     private boolean spoofInProgress = false;
+    private final net.ravenclaw.ravenclawspingequalizer.cryptography.CryptoHandler cryptoHandler = new net.ravenclaw.ravenclawspingequalizer.cryptography.CryptoHandler();
 
     @Override
     public void onInitializeClient() {
@@ -83,6 +85,41 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                             String status = PingEqualizerState.getInstance().getStatusMessage();
                             LOGGER.info("[RPE] Command executed: /pingequalizer status -> {}", status);
                             sendLocalMessage(status);
+                            return 1;
+                        })
+                    )
+                    .then(ClientCommandManager.literal("validate")
+                        .then(ClientCommandManager.argument("player", StringArgumentType.word())
+                            .executes(ctx -> {
+                                String player = StringArgumentType.getString(ctx, "player");
+                                cryptoHandler.validatePlayer(player).thenAccept(result -> {
+                                    MinecraftClient mc = MinecraftClient.getInstance();
+                                    if (mc != null) {
+                                        var lines = formatValidationLines(result);
+                                        mc.execute(() -> {
+                                            for (String l : lines) sendLocalMessage(l);
+                                        });
+                                    }
+                                });
+                                return 1;
+                            })
+                        )
+                        .executes(ctx -> {
+                            MinecraftClient mc = MinecraftClient.getInstance();
+                            if (mc == null || mc.getSession() == null) {
+                                sendLocalMessage("No player session available for validation.");
+                                return 1;
+                            }
+                            String username = mc.getSession().getUsername();
+                            cryptoHandler.validatePlayer(username).thenAccept(result -> {
+                                MinecraftClient mc2 = MinecraftClient.getInstance();
+                                if (mc2 != null) {
+                                    var lines = formatValidationLines(result);
+                                    mc2.execute(() -> {
+                                        for (String l : lines) sendLocalMessage(l);
+                                    });
+                                }
+                            });
                             return 1;
                         })
                     )
@@ -185,5 +222,50 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
         if (client.player != null) {
             client.player.sendMessage(Text.literal(message), false);
         }
+    }
+
+    private java.util.List<String> formatValidationLines(net.ravenclaw.ravenclawspingequalizer.cryptography.ApiService.PlayerValidationResult r) {
+        java.util.List<String> lines = new java.util.ArrayList<>();
+        if (r == null) {
+            lines.add("Validation: no result");
+            return lines;
+        }
+
+        lines.add("Validating player: " + (r.username() == null || r.username().isEmpty() ? "<unknown>" : r.username()));
+        lines.add("Player: " + (r.username() == null || r.username().isEmpty() ? "<unknown>" : r.username()));
+        lines.add("Mod Version: " + (r.modVersion() == null || r.modVersion().isEmpty() ? "unknown" : r.modVersion()));
+
+        String hashState = r.isHashCorrect() ? "Hash=GOOD" : "Hash=BAD";
+        String signedState = r.isSigned() ? "Signed=YES" : "Signed=NO";
+        String sigValid = r.isSignatureCorrect() ? "SignatureValid=YES" : "SignatureValid=NO";
+        lines.add("[" + hashState + " " + signedState + " " + sigValid + "]");
+
+        // Status line: mode, delay, base, total
+        String statusLine = String.format("Status: %s ; Delay: %dms ; Base: %dms ; Total: %dms",
+            r.peMode() == null ? "unknown" : r.peMode().toUpperCase(),
+            r.peDelay(),
+            r.peBasePing(),
+            r.peTotalPing()
+        );
+        lines.add(statusLine);
+
+        // Mod state description
+        if (!r.isSignatureCorrect()) {
+            lines.add("Mod State: Modified mod with no valid signature. Status cannot be trusted.");
+        } else if (!r.isHashCorrect()) {
+            lines.add("Mod State: Hash mismatch detected; treat with caution.");
+        } else {
+            lines.add("Mod State: Verified mod.");
+        }
+
+        // Last heartbeat: show seconds ago (if present)
+        if (r.lastHeartbeat() <= 0) {
+            lines.add("LastHeartbeat: 0s ago");
+        } else {
+            long secs = Math.max(0L, (System.currentTimeMillis() - r.lastHeartbeat()) / 1000L);
+            lines.add("LastHeartbeat: " + secs + "s ago");
+        }
+
+        return lines;
     }
 }
