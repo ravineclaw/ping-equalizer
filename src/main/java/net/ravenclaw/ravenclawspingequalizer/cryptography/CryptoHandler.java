@@ -366,21 +366,11 @@ public class CryptoHandler {
         }
     }
 
-    /**
-     * Triggers a heartbeat for commands (validate, status change).
-     * Applies anti-spam protection: only cooldown if spamming.
-     * Runs fully async to avoid blocking the main thread.
-     */
     public void triggerHeartbeatForCommand() {
         if (!canSendHeartbeat()) {
             return; // Global rate limit hit
         }
 
-        if (isCommandSpamming()) {
-            return; // Being spammed, skip
-        }
-
-        recordCommandHeartbeat();
         recordHeartbeat();
 
         if (currentAttestation == null || currentAttestation.isExpired(tickCount)) {
@@ -401,7 +391,7 @@ public class CryptoHandler {
      * @deprecated Use triggerHeartbeatForCommand() instead
      */
     public boolean triggerImmediateHeartbeatWithCooldown() {
-        if (!canSendHeartbeat() || isCommandSpamming()) {
+        if (!beginCommandExecution()) {
             return false;
         }
         triggerHeartbeatForCommand();
@@ -416,6 +406,17 @@ public class CryptoHandler {
     public CompletableFuture<ApiService.PlayerValidationResult> validatePlayer(String username) {
         triggerHeartbeatForCommand();
         return ApiService.validatePlayerByUsername(username);
+    }
+
+    public boolean beginCommandExecution() {
+        if (!canSendHeartbeat()) {
+            return false;
+        }
+        if (isCommandSpamming()) {
+            return false;
+        }
+        recordCommandHeartbeat();
+        return true;
     }
 
     public boolean isValidated() {

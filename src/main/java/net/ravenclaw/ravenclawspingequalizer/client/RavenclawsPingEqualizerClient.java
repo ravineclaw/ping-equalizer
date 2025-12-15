@@ -23,6 +23,8 @@ import net.ravenclaw.ravenclawspingequalizer.cryptography.CryptoHandler;
 
 public class RavenclawsPingEqualizerClient implements ClientModInitializer {
 
+    private static final String COMMAND_RATE_LIMIT_NOTICE = "Ping Equalizer commands are temporarily limited to avoid hitting the API. Please wait a second before trying again.";
+
     private String lastMessage = "";
 
     public static CryptoHandler cryptoHandler;
@@ -70,6 +72,9 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                             .then(ClientCommandManager.literal("add")
                                     .then(ClientCommandManager.argument("amount", IntegerArgumentType.integer(0))
                                             .executes(ctx -> {
+                                                if (!ensureCommandAllowed()) {
+                                                    return 0;
+                                                }
                                                 int amount = IntegerArgumentType.getInteger(ctx, "amount");
                                                 if (amount == 0) {
                                                     PingEqualizerState.getInstance().setOff();
@@ -86,6 +91,9 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                             .then(ClientCommandManager.literal("total")
                                     .then(ClientCommandManager.argument("amount", IntegerArgumentType.integer(0))
                                             .executes(ctx -> {
+                                                if (!ensureCommandAllowed()) {
+                                                    return 0;
+                                                }
                                                 int amount = IntegerArgumentType.getInteger(ctx, "amount");
                                                 if (amount == 0) {
                                                     PingEqualizerState.getInstance().setOff();
@@ -108,6 +116,9 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                             )
                             .then(ClientCommandManager.literal("off")
                                     .executes(ctx -> {
+                                        if (!ensureCommandAllowed()) {
+                                            return 0;
+                                        }
                                         PingEqualizerState.getInstance().setOff();
                                         notifyStateChange("Ping Equalizer: Disabled.");
                                         cryptoHandler.triggerHeartbeatForCommand();
@@ -118,6 +129,9 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                                     .then(ClientCommandManager.argument("player", StringArgumentType.string())
                                             .suggests(onlinePlayerSuggestions)
                                             .executes(ctx -> {
+                                                if (!ensureCommandAllowed()) {
+                                                    return 0;
+                                                }
                                                 String input = StringArgumentType.getString(ctx, "player");
                                                 UUID playerUuid = parseUuid(input);
 
@@ -174,6 +188,14 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
         if (client.player != null) {
             client.player.sendMessage(Text.literal(maybeAppendDeprecationNotice(message)), false);
         }
+    }
+
+    private boolean ensureCommandAllowed() {
+        if (cryptoHandler != null && cryptoHandler.beginCommandExecution()) {
+            return true;
+        }
+        sendLocalMessage(COMMAND_RATE_LIMIT_NOTICE);
+        return false;
     }
 
     private String maybeAppendDeprecationNotice(String message) {
