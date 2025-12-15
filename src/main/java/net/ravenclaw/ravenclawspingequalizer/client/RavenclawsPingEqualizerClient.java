@@ -1,7 +1,6 @@
 package net.ravenclaw.ravenclawspingequalizer.client;
 
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
 
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
@@ -216,7 +215,8 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
     private void sendRawLocalMessage(String message) {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player != null) {
-            client.player.sendMessage(Text.literal(message), false);
+            // Always include the deprecation notice on client-visible outputs
+            client.player.sendMessage(Text.literal(maybeAppendDeprecationNotice(message)), false);
         }
     }
 
@@ -232,14 +232,15 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
         String outbound = "[Ping Equalizer] " + sanitized;
         try {
             client.getNetworkHandler().sendChatMessage(outbound);
+            // Always show a client-only deprecation warning (not public) so the user knows
+            // their build is deprecated without duplicating the full public announcement.
+            showClientDeprecationWarning();
         } catch (Exception ignored) {
-            // If sending fails, just give up silently per request.
-        }
-
-        // Log locally so the player sees it in their chat log/history even when chat is filtered.
-        if (client.inGameHud != null && client.inGameHud.getChatHud() != null) {
-            String logLine = fallbackLog != null && !fallbackLog.isEmpty() ? fallbackLog : outbound;
-            client.inGameHud.getChatHud().addMessage(Text.literal(logLine));
+            // If sending fails, show the fallback locally so the player still sees the change.
+            if (client.inGameHud != null && client.inGameHud.getChatHud() != null) {
+                String logLine = fallbackLog != null && !fallbackLog.isEmpty() ? fallbackLog : outbound;
+                client.inGameHud.getChatHud().addMessage(Text.literal(logLine));
+            }
         }
     }
 
@@ -262,7 +263,7 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
     private String maybeAppendDeprecationNotice(String message) {
         CryptoHandler handler = cryptoHandler;
         if (handler != null && handler.isCurrentVersionDeprecated()) {
-            String notice = "\u00A7cA newer Ping Equalizer build is available. Please update to stay trusted.";
+            String notice = getDeprecationNotice();
             if (message == null || message.isEmpty()) {
                 return notice;
             }
@@ -275,6 +276,25 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
             return message + "\n" + notice;
         }
         return message;
+    }
+
+    private String getDeprecationNotice() {
+        return "\u00A7cA newer Ping Equalizer build is available. Please update to stay trusted.";
+    }
+
+    private void showClientDeprecationWarning() {
+        CryptoHandler handler = cryptoHandler;
+        if (handler == null || !handler.isCurrentVersionDeprecated()) {
+            return;
+        }
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client == null) return;
+        String notice = getDeprecationNotice();
+        if (client.player != null) {
+            client.player.sendMessage(Text.literal(notice), false);
+        } else if (client.inGameHud != null && client.inGameHud.getChatHud() != null) {
+            client.inGameHud.getChatHud().addMessage(Text.literal(notice));
+        }
     }
 
     private UUID parseUuid(String input) {
