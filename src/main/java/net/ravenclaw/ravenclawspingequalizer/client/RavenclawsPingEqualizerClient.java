@@ -1,10 +1,6 @@
 package net.ravenclaw.ravenclawspingequalizer.client;
 
-import java.util.ArrayDeque;
-import java.util.Deque;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
 
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
@@ -19,50 +15,40 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.PlayerListEntry;
-import net.minecraft.network.message.ChatVisibility;
-import net.minecraft.network.packet.c2s.common.ClientOptionsC2SPacket;
-import net.minecraft.network.packet.c2s.common.SyncedClientOptions;
 import net.minecraft.text.Text;
 import net.ravenclaw.ravenclawspingequalizer.PingEqualizerState;
+import net.ravenclaw.ravenclawspingequalizer.cryptography.ApiService;
 import net.ravenclaw.ravenclawspingequalizer.cryptography.CryptoHandler;
 
 public class RavenclawsPingEqualizerClient implements ClientModInitializer {
 
-    private static final long SPOOF_SEND_DELAY_MS = 75L;
-    private static final long SPOOF_RESTORE_DELAY_MS = 400L;
+    private static final String COMMAND_RATE_LIMIT_NOTICE = "Ping Equalizer commands are temporarily limited to avoid hitting the API. Please wait a second before trying again.";
 
     private String lastMessage = "";
-    private final Deque<String> pendingAnnouncements = new ArrayDeque<>();
-    private boolean spoofInProgress = false;
-    private int tickCounter = 0;
 
     public static CryptoHandler cryptoHandler;
 
     @Override
     public void onInitializeClient() {
+        ApiService.refreshApiBaseUrlFromGistAsync();
         cryptoHandler = new CryptoHandler();
 
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             PingEqualizerState.getInstance().tick(client);
             cryptoHandler.tick();
-            
-            tickCounter++;
-            if (tickCounter >= 1200) {
-                tickCounter = 0;
-            }
         });
 
         ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> {
-            resetAnnouncementState();
+            lastMessage = "";
             if (handler.getServerInfo() != null) {
                 cryptoHandler.setCurrentServer(handler.getServerInfo().address);
             } else {
                 cryptoHandler.setCurrentServer("");
             }
         });
-        
+
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
-            resetAnnouncementState();
+            lastMessage = "";
             cryptoHandler.setCurrentServer("");
         });
 
@@ -81,266 +67,364 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
             };
 
             LiteralCommandNode<FabricClientCommandSource> rootNode = dispatcher.register(
-                ClientCommandManager.literal("pingequalizer")
-                    .then(ClientCommandManager.literal("add")
-                        .then(ClientCommandManager.argument("amount", IntegerArgumentType.integer(0))
-                            .executes(ctx -> {
-                                int amount = IntegerArgumentType.getInteger(ctx, "amount");
-                                if (amount == 0) {
-                                    PingEqualizerState.getInstance().setOff();
-                                    notifyStateChange("PE: Off");
-                                } else {
-                                    PingEqualizerState.getInstance().setAddPing(amount);
-                                    notifyStateChange("PE: +" + amount);
+                    ClientCommandManager.literal("pingequalizer")
+                            .then(ClientCommandManager.literal("add")
+                                    .then(ClientCommandManager.argument("amount", IntegerArgumentType.integer(0))
+                                            .executes(ctx -> {
+                                if (!ensureCommandAllowed()) {
+                                    return 0;
                                 }
-                                return 1;
-                            })
-                        )
-                    )
-                    .then(ClientCommandManager.literal("total")
-                        .then(ClientCommandManager.argument("amount", IntegerArgumentType.integer(0))
-                            .executes(ctx -> {
-                                int amount = IntegerArgumentType.getInteger(ctx, "amount");
-                                if (amount == 0) {
-                                    PingEqualizerState.getInstance().setOff();
-                                    notifyStateChange("PE: Off");
-                                } else {
-                                    PingEqualizerState.getInstance().setTotalPing(amount);
-                                    notifyStateChange("PE: =" + amount);
+                                // If chat is set to commands-only and we can't reach the server
+                                // to send a public announcement, block the command.
+                                MinecraftClient mc = MinecraftClient.getInstance();
+                                boolean chatCommandsOnly = isChatCommandsOnly();
+                                if (chatCommandsOnly) {
+                                    sendLocalMessage("\u00A7cChat is set to commands-only; mod changes must be announced publicly; command blocked.");
+                                    return 0;
                                 }
-                                return 1;
-                            })
-                        )
-                    )
-                    .then(ClientCommandManager.literal("status")
-                        .executes(ctx -> {
-                            String status = PingEqualizerState.getInstance().getStatusMessage();
-                            sendLocalMessage(status);
-                            return 1;
-                        })
-                    )
-                    .then(ClientCommandManager.literal("off")
-                        .executes(ctx -> {
-                            PingEqualizerState.getInstance().setOff();
-                            notifyStateChange("PE: Off");
-                            return 1;
-                        })
-                    )
-                    .then(ClientCommandManager.literal("validate")
-                        .then(ClientCommandManager.literal("uuid")
-                            .then(ClientCommandManager.argument("uuid", StringArgumentType.string())
-                                .executes(ctx -> {
-                                    String uuidStr = StringArgumentType.getString(ctx, "uuid");
-                                    try {
-                                        UUID playerUuid = UUID.fromString(uuidStr);
-                                        sendLocalMessage("Validating player with UUID: " + playerUuid);
-                                        cryptoHandler.validatePlayer(playerUuid)
-                                            .thenAccept(result -> {
-                                                MinecraftClient.getInstance().execute(() -> {
-                                                    sendLocalMessage(formatValidationResult(result));
-                                                });
+                        int amount = IntegerArgumentType.getInteger(ctx, "amount");
+                        PingEqualizerState state = PingEqualizerState.getInstance();
+                                if (amount == 0) {
+                            if (state.isOffMode()) {
+                                logNoChange("Ping Equalizer already disabled.");
+                            } else {
+                                state.setOff();
+                                        notifyStateChange("Disabled.");
+                            }
+                        } else {
+                            if (state.isAddingDelay(amount)) {
+                                logNoChange("Ping Equalizer already adding " + amount + "ms delay.");
+                            } else {
+                                state.setAddPing(amount);
+                                        notifyStateChange("Added " + amount + "ms delay.");
+                            }
+                        }
+                        cryptoHandler.triggerHeartbeatForCommand();
+                        return 1;
+                    })
+            )
+                            )
+                            .then(ClientCommandManager.literal("total")
+                                    .then(ClientCommandManager.argument("amount", IntegerArgumentType.integer(0))
+                                            .executes(ctx -> {
+                                if (!ensureCommandAllowed()) {
+                                    return 0;
+                                }
+                                boolean chatCommandsOnly = isChatCommandsOnly();
+                                if (chatCommandsOnly) {
+                                    sendLocalMessage("\u00A7cChat is set to commands-only; mod changes must be announced publicly; command blocked.");
+                                    return 0;
+                                }
+                        int amount = IntegerArgumentType.getInteger(ctx, "amount");
+                        PingEqualizerState totalState = PingEqualizerState.getInstance();
+                                if (amount == 0) {
+                            if (totalState.isOffMode()) {
+                                logNoChange("Ping Equalizer already disabled.");
+                            } else {
+                                totalState.setOff();
+                                notifyStateChange("Disabled.");
+                            }
+                        } else {
+                            if (totalState.isTotalPingTarget(amount)) {
+                                logNoChange("Ping Equalizer already targeting " + amount + "ms total ping.");
+                            } else {
+                                totalState.setTotalPing(amount);
+                                notifyStateChange("Total ping set to " + amount + "ms.");
+                            }
+                        }
+                        cryptoHandler.triggerHeartbeatForCommand();
+                        return 1;
+                    })
+            )
+                            )
+                            .then(ClientCommandManager.literal("status")
+                                    .executes(ctx -> {
+                                        String status = PingEqualizerState.getInstance().getStatusMessage();
+                                        sendLocalMessage(status);
+                                        return 1;
+                                    })
+                            )
+                            .then(ClientCommandManager.literal("off")
+                                    .executes(ctx -> {
+                                        if (!ensureCommandAllowed()) {
+                                            return 0;
+                                        }
+                                        boolean chatCommandsOnly = isChatCommandsOnly();
+                                        if (chatCommandsOnly) {
+                                            sendLocalMessage("\u00A7cChat is set to commands-only; mod changes must be announced publicly; command blocked.");
+                                            return 0;
+                                        }
+                                        PingEqualizerState offState = PingEqualizerState.getInstance();
+                                        if (offState.isOffMode()) {
+                                            logNoChange("Ping Equalizer already disabled.");
+                                        } else {
+                                            offState.setOff();
+                                            notifyStateChange("Disabled.");
+                                        }
+                                        cryptoHandler.triggerHeartbeatForCommand();
+                                        return 1;
+                                    })
+                            )
+                            .then(ClientCommandManager.literal("validate")
+                                    .then(ClientCommandManager.argument("player", StringArgumentType.string())
+                                            .suggests(onlinePlayerSuggestions)
+                                            .executes(ctx -> {
+                                                if (!ensureCommandAllowed()) {
+                                                    return 0;
+                                                }
+                                                String input = StringArgumentType.getString(ctx, "player");
+                                                UUID playerUuid = parseUuid(input);
+
+                                                if (playerUuid != null) {
+                                                    sendLocalMessage("Validating player with UUID: " + playerUuid);
+                                                    cryptoHandler.validatePlayer(playerUuid)
+                                                            .thenAccept(result -> {
+                                                                MinecraftClient.getInstance().execute(() -> {
+                                                                    sendLocalMessage(formatValidationResult(result, input));
+                                                                });
+                                                            })
+                                                            .exceptionally(ex -> {
+                                                                MinecraftClient.getInstance().execute(() -> {
+                                                                    sendLocalMessage("Error validating player: " + ex.getMessage());
+                                                                });
+                                                                return null;
+                                                            });
+                                                } else {
+                                                    sendLocalMessage("Validating player: " + input);
+                                                    cryptoHandler.validatePlayer(input)
+                                                            .thenAccept(result -> {
+                                                                MinecraftClient.getInstance().execute(() -> {
+                                                                    sendLocalMessage(formatValidationResult(result, input));
+                                                                });
+                                                            })
+                                                            .exceptionally(ex -> {
+                                                                MinecraftClient.getInstance().execute(() -> {
+                                                                    sendLocalMessage("Error validating player: " + ex.getMessage());
+                                                                });
+                                                                return null;
+                                                            });
+                                                }
+                                                return 1;
                                             })
-                                            .exceptionally(ex -> {
-                                                MinecraftClient.getInstance().execute(() -> {
-                                                    sendLocalMessage("Error validating player: " + ex.getMessage());
-                                                });
-                                                return null;
-                                            });
-                                    } catch (IllegalArgumentException e) {
-                                        sendLocalMessage("Invalid UUID format");
-                                    }
-                                    return 1;
-                                })
+                                    )
                             )
-                        )
-                        .then(ClientCommandManager.literal("username")
-                            .then(ClientCommandManager.argument("username", StringArgumentType.word())
-                                .suggests(onlinePlayerSuggestions)
-                                .executes(ctx -> {
-                                    String username = StringArgumentType.getString(ctx, "username");
-                                    sendLocalMessage("Validating player: " + username);
-                                    cryptoHandler.validatePlayer(username)
-                                        .thenAccept(result -> {
-                                            MinecraftClient.getInstance().execute(() -> {
-                                                sendLocalMessage(formatValidationResult(result));
-                                            });
-                                        })
-                                        .exceptionally(ex -> {
-                                            MinecraftClient.getInstance().execute(() -> {
-                                                sendLocalMessage("Error validating player: " + ex.getMessage());
-                                            });
-                                            return null;
-                                        });
-                                    return 1;
-                                })
-                            )
-                        )
-                    )
             );
 
             dispatcher.register(ClientCommandManager.literal("pe").redirect(rootNode));
         });
     }
 
-    private void resetAnnouncementState() {
-        lastMessage = "";
-        pendingAnnouncements.clear();
-        spoofInProgress = false;
-    }
-
     private void notifyStateChange(String message) {
-        if (message.equals(lastMessage)) {
+        String finalMessage = maybeAppendDeprecationNotice(message);
+        if (finalMessage.equals(lastMessage)) {
             return;
         }
-        lastMessage = message;
-
-        MinecraftClient client = MinecraftClient.getInstance();
-        if (client.player == null) {
-            return;
-        }
-
-        pendingAnnouncements.addLast(message);
-        processPendingAnnouncements(client);
-    }
-
-    private void processPendingAnnouncements(MinecraftClient client) {
-        if (spoofInProgress || client.player == null) {
-            return;
-        }
-
-        String next = pendingAnnouncements.pollFirst();
-        if (next == null) {
-            return;
-        }
-
-        ChatVisibility currentVisibility = client.options.getChatVisibility().getValue();
-        if (currentVisibility == ChatVisibility.FULL) {
-            client.player.networkHandler.sendChatMessage(next);
-            processPendingAnnouncements(client);
-            return;
-        }
-
-        spoofInProgress = true;
-        SyncedClientOptions originalOptions = client.options.getSyncedOptions();
-        SyncedClientOptions forcedOptions = copyWithVisibility(originalOptions, ChatVisibility.FULL);
-
-        client.player.networkHandler.sendPacket(new ClientOptionsC2SPacket(forcedOptions));
-
-        CompletableFuture.delayedExecutor(SPOOF_SEND_DELAY_MS, TimeUnit.MILLISECONDS).execute(() ->
-            client.execute(() -> {
-                if (client.player == null) {
-                    spoofInProgress = false;
-                    return;
-                }
-
-                client.player.networkHandler.sendChatMessage(next);
-
-                CompletableFuture.delayedExecutor(SPOOF_RESTORE_DELAY_MS, TimeUnit.MILLISECONDS).execute(() ->
-                    client.execute(() -> {
-                        if (client.player != null) {
-                            client.player.networkHandler.sendPacket(new ClientOptionsC2SPacket(originalOptions));
-                        }
-                        spoofInProgress = false;
-                        processPendingAnnouncements(client);
-                    })
-                );
-            })
-        );
-    }
-
-    private static SyncedClientOptions copyWithVisibility(SyncedClientOptions base, ChatVisibility visibility) {
-        return new SyncedClientOptions(
-            base.language(),
-            base.viewDistance(),
-            visibility,
-            base.chatColorsEnabled(),
-            base.playerModelParts(),
-            base.mainArm(),
-            base.filtersText(),
-            base.allowsServerListing()
-        );
+        lastMessage = finalMessage;
+        sendPublicModeAnnouncement(message, finalMessage);
     }
 
     private void sendLocalMessage(String message) {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player != null) {
-            client.player.sendMessage(Text.literal(message), false);
+            client.player.sendMessage(Text.literal(maybeAppendDeprecationNotice(message)), false);
         }
     }
 
-    private String formatValidationResult(net.ravenclaw.ravenclawspingequalizer.cryptography.ApiService.PlayerValidationResult result) {
+    private void sendRawLocalMessage(String message) {
         MinecraftClient client = MinecraftClient.getInstance();
-        boolean isSelf = client != null && client.getSession() != null &&
-                         result.username().equalsIgnoreCase(client.getSession().getUsername());
+        if (client.player != null) {
+            // Always include the deprecation notice on client-visible outputs
+            client.player.sendMessage(Text.literal(maybeAppendDeprecationNotice(message)), false);
+        }
+    }
+
+    private void sendPublicModeAnnouncement(String message, String fallbackLog) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client == null || client.getNetworkHandler() == null || message == null || message.isEmpty()) {
+            return;
+        }
+        // Remove any duplicate "Ping Equalizer" prefix so the public announcement
+        // only shows the tag once in brackets.
+        String normalized = message == null ? "" : message.replaceAll("(?i)^\\s*Ping Equalizer:?\\s*", "");
+        String sanitized = stripFormattingCodes(normalized.replace("\n", " ").trim());
+        if (sanitized.isEmpty()) {
+            return;
+        }
+        String outbound = "[Ping Equalizer] " + sanitized;
+        try {
+            client.getNetworkHandler().sendChatMessage(outbound);
+            // Always show a client-only deprecation warning (not public) so the user knows
+            // their build is deprecated without duplicating the full public announcement.
+            showClientDeprecationWarning();
+        } catch (Exception ignored) {
+            // Intentionally do not show a client-side fallback announcement here.
+            // Mod state changes must be announced publicly; commands are blocked when
+            // the server cannot be reached, so no local fallback is printed.
+        }
+    }
+
+    private String stripFormattingCodes(String value) {
+        return value.replaceAll("\u00A7.", "");
+    }
+
+    private void logNoChange(String message) {
+        sendLocalMessage(message);
+    }
+
+    private boolean ensureCommandAllowed() {
+        if (cryptoHandler != null && cryptoHandler.beginCommandExecution()) {
+            return true;
+        }
+        sendLocalMessage(COMMAND_RATE_LIMIT_NOTICE);
+        return false;
+    }
+
+    private String maybeAppendDeprecationNotice(String message) {
+        CryptoHandler handler = cryptoHandler;
+        if (handler != null && handler.isCurrentVersionDeprecated()) {
+            String notice = getDeprecationNotice();
+            if (message == null || message.isEmpty()) {
+                return notice;
+            }
+            if (message.contains(notice)) {
+                return message;
+            }
+            if (message.endsWith("\n")) {
+                return message + notice;
+            }
+            return message + "\n" + notice;
+        }
+        return message;
+    }
+
+    private String getDeprecationNotice() {
+        return "\u00A7cA newer Ping Equalizer build is available. Please update to stay trusted.";
+    }
+
+    private void showClientDeprecationWarning() {
+        CryptoHandler handler = cryptoHandler;
+        if (handler == null || !handler.isCurrentVersionDeprecated()) {
+            return;
+        }
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client == null) return;
+        String notice = getDeprecationNotice();
+        if (client.player != null) {
+            client.player.sendMessage(Text.literal(notice), false);
+        } else if (client.inGameHud != null && client.inGameHud.getChatHud() != null) {
+            client.inGameHud.getChatHud().addMessage(Text.literal(notice));
+        }
+    }
+
+    private boolean isChatCommandsOnly() {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc == null || mc.options == null) return false;
+        try {
+            java.lang.reflect.Field f = mc.options.getClass().getField("chatVisibility");
+            Object v = f.get(mc.options);
+            return v != null && "SYSTEM".equalsIgnoreCase(v.toString());
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private UUID parseUuid(String input) {
+        if (input == null || input.isEmpty()) {
+            return null;
+        }
+
+        try {
+            return UUID.fromString(input);
+        } catch (IllegalArgumentException ignored) {
+        }
+
+        if (input.length() == 32 && input.matches("[0-9a-fA-F]+")) {
+            try {
+                String withDashes = input.substring(0, 8) + "-" +
+                        input.substring(8, 12) + "-" +
+                        input.substring(12, 16) + "-" +
+                        input.substring(16, 20) + "-" +
+                        input.substring(20, 32);
+                return UUID.fromString(withDashes);
+            } catch (IllegalArgumentException ignored) {
+            }
+        }
+
+        return null;
+    }
+
+    private String formatValidationResult(net.ravenclaw.ravenclawspingequalizer.cryptography.ApiService.PlayerValidationResult result, String input) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        boolean isSelf = false;
+        if (client != null && client.getSession() != null) {
+            String selfUsername = client.getSession().getUsername();
+            UUID selfUuid = client.getSession().getUuidOrNull();
+            if (!result.username().isEmpty() && result.username().equalsIgnoreCase(selfUsername)) {
+                isSelf = true;
+            }
+            if (result.username().isEmpty() && input != null) {
+                if (input.equalsIgnoreCase(selfUsername)) {
+                    isSelf = true;
+                } else if (selfUuid != null) {
+                    UUID inputUuid = parseUuid(input);
+                    if (inputUuid != null && inputUuid.equals(selfUuid)) {
+                        isSelf = true;
+                    }
+                }
+            }
+        }
         return formatValidationResult(result, isSelf);
     }
 
     private String formatValidationResult(net.ravenclaw.ravenclawspingequalizer.cryptography.ApiService.PlayerValidationResult result, boolean isSelf) {
-        // Handle server unreachable case
         if (result.isServerUnreachable()) {
-            if (isSelf) {
-                // Fall back to client-side values when validating yourself
-                return formatClientSideFallback();
-            }
-            return "§cUnable to reach validation server. Please try again later.";
+            return isSelf ? formatClientSideFallback() : "\u00A7cUnable to reach validation server. Please try again later.";
         }
 
-        if (!result.isConnected()) {
-            return "§cPlayer not found or has never connected.";
+        if (!result.isConnected() && (result.username() == null || result.username().isEmpty())) {
+            return "\u00A7cPlayer not found or has never connected.";
         }
 
-        // Check if heartbeat is stale (over 40 seconds ago)
         long now = System.currentTimeMillis();
         long heartbeatAge = now - result.lastHeartbeat();
         boolean isStale = heartbeatAge > 40000;
 
-        if (isStale && !isSelf) {
-            return "§cPlayer is not currently connected. Last seen: " + formatHeartbeatAge(heartbeatAge);
+        if (isStale) {
+            return "\u00A7cPlayer is not currently connected. Last seen: " + formatHeartbeatAge(heartbeatAge);
         }
 
         StringBuilder sb = new StringBuilder();
         boolean modeActive = !result.peMode().equalsIgnoreCase("off") && !result.peMode().equalsIgnoreCase("unknown");
 
-        // Line 1: Player info
-        sb.append("§6Player: §f").append(result.username());
-        // Only show server if mode is active (mod is actually running)
+        sb.append("\u00A76Player: \u00A7f").append(result.username());
         if (modeActive && !result.currentServer().isEmpty()) {
-            sb.append(" §7on §f").append(result.currentServer());
+            sb.append(" \u00A77on \u00A7f").append(result.currentServer());
         }
         sb.append("\n");
 
-        // Line 2: Status (mode, delay, ping info)
+        sb.append("\u00A76Mod Version: \u00A7f").append(result.modVersion().isEmpty() ? "unknown" : result.modVersion());
+        sb.append("\n");
+
+        sb.append("\u00A77[Hash=").append(result.isHashCorrect() ? "\u00A7aOK" : "\u00A7cBAD");
+        sb.append("\u00A77, Signed=").append(result.isSigned() ? "\u00A7aYES" : "\u00A7cNO");
+        sb.append("\u00A77, SignatureValid=").append(result.isSignatureCorrect() ? "\u00A7aYES" : "\u00A7cNO");
+        sb.append("\u00A77]");
+        sb.append("\n");
+
         String modeDisplay = formatMode(result.peMode());
-        sb.append("§6Status: §f").append(modeDisplay);
+        sb.append("\u00A76Status: \u00A7f").append(modeDisplay);
         if (modeActive) {
-            sb.append(" §7| Delay: §f").append(result.peDelay()).append("ms");
-            sb.append(" §7| Base: §f").append(result.peBasePing()).append("ms");
-            sb.append(" §7| Total: §f").append(result.peTotalPing()).append("ms");
+            sb.append(" \u00A77| Delay: \u00A7f").append(result.peDelay()).append("ms");
+            sb.append(" \u00A77| Base: \u00A7f").append(result.peBasePing()).append("ms");
+            sb.append(" \u00A77| Total: \u00A7f").append(result.peTotalPing()).append("ms");
         }
         sb.append("\n");
 
-        // Line 3: Mod state description
-        sb.append("§6Mod State: ");
-        if (isStale) {
-            sb.append("§cHeartbeat stale. Last seen: ").append(formatHeartbeatAge(heartbeatAge));
-        } else {
-            sb.append(getModStateDescription(result.isHashCorrect(), result.isSignatureCorrect(), result.modStatus()));
-        }
+        sb.append("\u00A76Mod State: ");
+        sb.append(getModStateDescription(result.isHashCorrect(), result.isSignatureCorrect(), result.modStatus(), result.isSigned()));
         sb.append("\n");
 
-        // Line 4: Details with last heartbeat
-        sb.append("§7Details: Hash=").append(result.isHashCorrect() ? "§aOK" : "§cBAD");
-        sb.append("§7, Signed=").append(result.isSignatureCorrect() ? "§aYES" : "§cNO");
-        sb.append("§7, LastHeartbeat=").append(formatHeartbeatAge(heartbeatAge));
-
-        // If checking yourself, show all available information
-        if (isSelf) {
-            sb.append("\n§7UUID: §f").append(result.uuid());
-            sb.append("\n§7ModStatus: §f").append(result.modStatus());
-            if (!result.currentServer().isEmpty()) {
-                sb.append("\n§7Server: §f").append(result.currentServer());
-            }
-        }
+        sb.append("\u00A77LastHeartbeat: ").append(formatHeartbeatAge(heartbeatAge));
 
         return sb.toString();
     }
@@ -358,23 +442,23 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
     private String formatHeartbeatAge(long ageMs) {
         long seconds = ageMs / 1000;
         if (seconds < 60) {
-            return (seconds <= 40 ? "§a" : "§c") + seconds + "s ago";
+            return (seconds <= 40 ? "\u00A7a" : "\u00A7c") + seconds + "s ago";
         }
         long minutes = seconds / 60;
-        return "§c" + minutes + "m ago";
+        return "\u00A7c" + minutes + "m ago";
     }
 
-    private String getModStateDescription(boolean hashCorrect, boolean signatureCorrect, String modStatus) {
-        if (hashCorrect && signatureCorrect) {
-            return "§aFully validated.";
-        } else if (hashCorrect && modStatus.equalsIgnoreCase("unsigned")) {
-            return "§cSignature missing. The mod is not cryptographically verified.";
+    private String getModStateDescription(boolean hashCorrect, boolean signatureCorrect, String modStatus, boolean isSigned) {
+        if (hashCorrect && signatureCorrect && isSigned) {
+            return "\u00A7aFully validated.";
+        } else if (hashCorrect && !isSigned) {
+            return "\u00A7cSignature missing. The mod is not cryptographically verified.";
         } else if (hashCorrect && !signatureCorrect) {
-            return "§cSignature verification failed. The status cannot be trusted.";
+            return "\u00A7cSignature verification failed. The status cannot be trusted.";
         } else if (!hashCorrect && signatureCorrect) {
-            return "§cMod hash mismatch with valid signature. Private key is compromised.";
+            return "\u00A7cMod hash mismatch with valid signature. Private key is compromised.";
         } else {
-            return "§cModified mod with no valid signature. Status cannot be trusted.";
+            return "\u00A7cModified mod with no valid signature. Status cannot be trusted.";
         }
     }
 
@@ -383,46 +467,41 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
         PingEqualizerState peState = PingEqualizerState.getInstance();
 
         StringBuilder sb = new StringBuilder();
-        sb.append("§e⚠ Server unreachable - showing local values only\n");
+        sb.append("\u00A7eServer unreachable - showing local values only\n");
 
-        // Line 1: Player info
         String username = client.getSession() != null ? client.getSession().getUsername() : "Unknown";
-        sb.append("§6Player: §f").append(username);
+        sb.append("\u00A76Player: \u00A7f").append(username);
         String currentServer = cryptoHandler != null ? cryptoHandler.getCurrentServer() : "";
         if (!currentServer.isEmpty()) {
-            sb.append(" §7on §f").append(currentServer);
+            sb.append(" \u00A77on \u00A7f").append(currentServer);
         }
         sb.append("\n");
 
-        // Line 2: Status (mode, delay, ping info)
+        boolean isSigned = cryptoHandler != null && cryptoHandler.canSign();
+        sb.append("\u00A77[Hash=\u00A7f").append(cryptoHandler != null ? "local" : "N/A");
+        sb.append("\u00A77, Signed=").append(isSigned ? "\u00A7aYES" : "\u00A7cNO");
+        sb.append("\u00A77, SignatureValid=\u00A7eN/A\u00A77]");
+        sb.append("\n");
+
         String modeDisplay = formatMode(peState.getMode().name());
         boolean modeActive = peState.getMode() != PingEqualizerState.Mode.OFF;
-        sb.append("§6Status: §f").append(modeDisplay);
+        sb.append("\u00A76Status: \u00A7f").append(modeDisplay);
         if (modeActive) {
-            sb.append(" §7| Delay: §f").append(peState.getCurrentDelayMs()).append("ms");
-            sb.append(" §7| Base: §f").append(peState.getBasePing()).append("ms");
-            sb.append(" §7| Total: §f").append(peState.getTotalPing()).append("ms");
+            sb.append(" \u00A77| Delay: \u00A7f").append(peState.getCurrentDelayMs()).append("ms");
+            sb.append(" \u00A77| Base: \u00A7f").append(peState.getBasePing()).append("ms");
+            sb.append(" \u00A77| Total: \u00A7f").append(peState.getTotalPing()).append("ms");
         }
         sb.append("\n");
 
-        // Line 3: Mod state (local info only)
-        sb.append("§6Mod State: ");
-        if (cryptoHandler != null && cryptoHandler.canSign()) {
-            sb.append("§aLocally validated (signed)");
+        sb.append("\u00A76Mod State: ");
+        if (isSigned) {
+            sb.append("\u00A7aLocally validated (signed)");
         } else {
-            sb.append("§eLocally running (unsigned)");
+            sb.append("\u00A7eLocally running (unsigned)");
         }
         sb.append("\n");
 
-        // Line 4: Details
-        sb.append("§7Details: Hash=§f").append(cryptoHandler != null ? cryptoHandler.getModHash() : "N/A");
-        sb.append("§7, Signed=").append(cryptoHandler != null && cryptoHandler.canSign() ? "§aYES" : "§cNO");
-        sb.append("§7, Validated=").append(cryptoHandler != null && cryptoHandler.isValidated() ? "§aYES" : "§cNO");
-
-        // UUID info
-        if (client.getSession() != null && client.getSession().getUuidOrNull() != null) {
-            sb.append("\n§7UUID: §f").append(client.getSession().getUuidOrNull());
-        }
+        sb.append("\u00A77LastHeartbeat: \u00A7eUnable to verify");
 
         return sb.toString();
     }
