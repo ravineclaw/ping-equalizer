@@ -405,14 +405,16 @@ public class PingEqualizerState {
 
     private void adjustPreciseDelaySmoothly(long targetDelayMs) {
         double delta = targetDelayMs - preciseDelay;
-        if (Math.abs(delta) < 0.01) {
+        double distance = Math.abs(delta);
+        if (distance < 0.01) {
             preciseDelay = targetDelayMs;
             return;
         }
-        double distance = Math.abs(delta);
         double minStep = 0.5;
         double maxStep = 60.0;
-        double step = distance * 0.4;
+        double ratio = Math.min(distance / 20.0, 1.0);
+        double scale = 0.3 + 0.7 * ratio;
+        double step = distance * scale;
         step = Math.min(distance, Math.max(minStep, Math.min(step, maxStep)));
         preciseDelay += Math.copySign(step, delta);
         if (Math.abs(targetDelayMs - preciseDelay) < 0.5) {
