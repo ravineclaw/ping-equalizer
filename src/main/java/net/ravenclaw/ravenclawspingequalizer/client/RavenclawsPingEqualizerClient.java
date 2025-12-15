@@ -71,24 +71,32 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                             .then(ClientCommandManager.literal("add")
                                     .then(ClientCommandManager.argument("amount", IntegerArgumentType.integer(0))
                                             .executes(ctx -> {
-                                                if (!ensureCommandAllowed()) {
-                                                    return 0;
-                                                }
+                                if (!ensureCommandAllowed()) {
+                                    return 0;
+                                }
+                                // If chat is set to commands-only and we can't reach the server
+                                // to send a public announcement, block the command.
+                                MinecraftClient mc = MinecraftClient.getInstance();
+                                boolean chatCommandsOnly = isChatCommandsOnly();
+                                if (chatCommandsOnly) {
+                                    sendLocalMessage("\u00A7cChat is set to commands-only; mod changes must be announced publicly; command blocked.");
+                                    return 0;
+                                }
                         int amount = IntegerArgumentType.getInteger(ctx, "amount");
                         PingEqualizerState state = PingEqualizerState.getInstance();
-                        if (amount == 0) {
+                                if (amount == 0) {
                             if (state.isOffMode()) {
                                 logNoChange("Ping Equalizer already disabled.");
                             } else {
                                 state.setOff();
-                                notifyStateChange("Ping Equalizer: Disabled.");
+                                        notifyStateChange("Disabled.");
                             }
                         } else {
                             if (state.isAddingDelay(amount)) {
                                 logNoChange("Ping Equalizer already adding " + amount + "ms delay.");
                             } else {
                                 state.setAddPing(amount);
-                                notifyStateChange("Ping Equalizer: Added " + amount + "ms delay.");
+                                        notifyStateChange("Added " + amount + "ms delay.");
                             }
                         }
                         cryptoHandler.triggerHeartbeatForCommand();
@@ -99,24 +107,29 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                             .then(ClientCommandManager.literal("total")
                                     .then(ClientCommandManager.argument("amount", IntegerArgumentType.integer(0))
                                             .executes(ctx -> {
-                                                if (!ensureCommandAllowed()) {
-                                                    return 0;
-                                                }
+                                if (!ensureCommandAllowed()) {
+                                    return 0;
+                                }
+                                boolean chatCommandsOnly = isChatCommandsOnly();
+                                if (chatCommandsOnly) {
+                                    sendLocalMessage("\u00A7cChat is set to commands-only; mod changes must be announced publicly; command blocked.");
+                                    return 0;
+                                }
                         int amount = IntegerArgumentType.getInteger(ctx, "amount");
                         PingEqualizerState totalState = PingEqualizerState.getInstance();
-                        if (amount == 0) {
+                                if (amount == 0) {
                             if (totalState.isOffMode()) {
                                 logNoChange("Ping Equalizer already disabled.");
                             } else {
                                 totalState.setOff();
-                                notifyStateChange("Ping Equalizer: Disabled.");
+                                notifyStateChange("Disabled.");
                             }
                         } else {
                             if (totalState.isTotalPingTarget(amount)) {
                                 logNoChange("Ping Equalizer already targeting " + amount + "ms total ping.");
                             } else {
                                 totalState.setTotalPing(amount);
-                                notifyStateChange("Ping Equalizer: Total ping set to " + amount + "ms.");
+                                notifyStateChange("Total ping set to " + amount + "ms.");
                             }
                         }
                         cryptoHandler.triggerHeartbeatForCommand();
@@ -136,12 +149,17 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                                         if (!ensureCommandAllowed()) {
                                             return 0;
                                         }
+                                        boolean chatCommandsOnly = isChatCommandsOnly();
+                                        if (chatCommandsOnly) {
+                                            sendLocalMessage("\u00A7cChat is set to commands-only; mod changes must be announced publicly; command blocked.");
+                                            return 0;
+                                        }
                                         PingEqualizerState offState = PingEqualizerState.getInstance();
                                         if (offState.isOffMode()) {
                                             logNoChange("Ping Equalizer already disabled.");
                                         } else {
                                             offState.setOff();
-                                            notifyStateChange("Ping Equalizer: Disabled.");
+                                            notifyStateChange("Disabled.");
                                         }
                                         cryptoHandler.triggerHeartbeatForCommand();
                                         return 1;
@@ -225,7 +243,10 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
         if (client == null || client.getNetworkHandler() == null || message == null || message.isEmpty()) {
             return;
         }
-        String sanitized = stripFormattingCodes(message.replace("\n", " ").trim());
+        // Remove any duplicate "Ping Equalizer" prefix so the public announcement
+        // only shows the tag once in brackets.
+        String normalized = message == null ? "" : message.replaceAll("(?i)^\\s*Ping Equalizer:?\\s*", "");
+        String sanitized = stripFormattingCodes(normalized.replace("\n", " ").trim());
         if (sanitized.isEmpty()) {
             return;
         }
@@ -236,11 +257,9 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
             // their build is deprecated without duplicating the full public announcement.
             showClientDeprecationWarning();
         } catch (Exception ignored) {
-            // If sending fails, show the fallback locally so the player still sees the change.
-            if (client.inGameHud != null && client.inGameHud.getChatHud() != null) {
-                String logLine = fallbackLog != null && !fallbackLog.isEmpty() ? fallbackLog : outbound;
-                client.inGameHud.getChatHud().addMessage(Text.literal(logLine));
-            }
+            // Intentionally do not show a client-side fallback announcement here.
+            // Mod state changes must be announced publicly; commands are blocked when
+            // the server cannot be reached, so no local fallback is printed.
         }
     }
 
@@ -294,6 +313,18 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
             client.player.sendMessage(Text.literal(notice), false);
         } else if (client.inGameHud != null && client.inGameHud.getChatHud() != null) {
             client.inGameHud.getChatHud().addMessage(Text.literal(notice));
+        }
+    }
+
+    private boolean isChatCommandsOnly() {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc == null || mc.options == null) return false;
+        try {
+            java.lang.reflect.Field f = mc.options.getClass().getField("chatVisibility");
+            Object v = f.get(mc.options);
+            return v != null && "SYSTEM".equalsIgnoreCase(v.toString());
+        } catch (Exception e) {
+            return false;
         }
     }
 
