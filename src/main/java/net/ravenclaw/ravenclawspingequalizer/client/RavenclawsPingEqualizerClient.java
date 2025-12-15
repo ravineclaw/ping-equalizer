@@ -203,7 +203,7 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
             return;
         }
         lastMessage = finalMessage;
-        sendRawLocalMessage(finalMessage);
+        sendPublicModeAnnouncement(message, finalMessage);
     }
 
     private void sendLocalMessage(String message) {
@@ -218,6 +218,33 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
         if (client.player != null) {
             client.player.sendMessage(Text.literal(message), false);
         }
+    }
+
+    private void sendPublicModeAnnouncement(String message, String fallbackLog) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client == null || client.getNetworkHandler() == null || message == null || message.isEmpty()) {
+            return;
+        }
+        String sanitized = stripFormattingCodes(message.replace("\n", " ").trim());
+        if (sanitized.isEmpty()) {
+            return;
+        }
+        String outbound = "[Ping Equalizer] " + sanitized;
+        try {
+            client.getNetworkHandler().sendChatMessage(outbound);
+        } catch (Exception ignored) {
+            // If sending fails, just give up silently per request.
+        }
+
+        // Log locally so the player sees it in their chat log/history even when chat is filtered.
+        if (client.inGameHud != null && client.inGameHud.getChatHud() != null) {
+            String logLine = fallbackLog != null && !fallbackLog.isEmpty() ? fallbackLog : outbound;
+            client.inGameHud.getChatHud().addMessage(Text.literal(logLine));
+        }
+    }
+
+    private String stripFormattingCodes(String value) {
+        return value.replaceAll("\u00A7.", "");
     }
 
     private void logNoChange(String message) {

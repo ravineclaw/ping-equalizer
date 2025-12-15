@@ -17,9 +17,13 @@ import java.security.PublicKey;
 import java.security.Signature;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.security.spec.X509EncodedKeySpec;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Comparator;
+import java.util.List;
 import java.util.stream.Stream;
+
+import net.fabricmc.loader.api.FabricLoader;
 
 public final class CryptoUtils {
     private CryptoUtils() {
@@ -88,47 +92,30 @@ public final class CryptoUtils {
     }
 
     public static byte[] calculateModHash() {
+        MessageDigest digest;
         try {
-            ProtectionDomain pd = CryptoUtils.class.getProtectionDomain();
-            if (pd == null || pd.getCodeSource() == null || pd.getCodeSource().getLocation() == null) {
-                throw new IllegalStateException("Unable to determine code location");
+            digest = MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException(e);
+        }
+
+        try {
+            Path preferred = resolveModPathFromLoader();
+            if (preferred != null) {
+                preferred = preferPackagedJarIfDirectory(preferred);
             }
 
-            Path codePath = Paths.get(pd.getCodeSource().getLocation().toURI()).toAbsolutePath();
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-
-            if (Files.isRegularFile(codePath)) {
-                try (InputStream in = Files.newInputStream(codePath);
-                     DigestInputStream din = new DigestInputStream(in, digest)) {
-                    byte[] buffer = new byte[8192];
-                    while (din.read(buffer) != -1) {
-                    }
+            if (preferred == null || !Files.exists(preferred)) {
+                ProtectionDomain pd = CryptoUtils.class.getProtectionDomain();
+                if (pd == null || pd.getCodeSource() == null || pd.getCodeSource().getLocation() == null) {
+                    throw new IllegalStateException("Unable to determine code location");
                 }
-            } else if (Files.isDirectory(codePath)) {
-                try (Stream<Path> stream = Files.walk(codePath)) {
-                    stream.filter(Files::isRegularFile)
-                            .sorted(Comparator.comparing(Path::toString))
-                            .forEach(p -> {
-                                Path rel = codePath.relativize(p);
-                                byte[] pathBytes = rel.toString().replace('\\', '/').getBytes(java.nio.charset.StandardCharsets.UTF_8);
-                                digest.update(pathBytes);
-                                digest.update((byte) 0);
-                                try (InputStream in = Files.newInputStream(p);
-                                     DigestInputStream din = new DigestInputStream(in, digest)) {
-                                    byte[] buf = new byte[8192];
-                                    while (din.read(buf) != -1) {
-                                    }
-                                } catch (IOException e) {
-                                    throw new RuntimeException(e);
-                                }
-                            });
-                }
-            } else {
-                throw new IllegalStateException("Unexpected code location type");
+                preferred = Paths.get(pd.getCodeSource().getLocation().toURI()).toAbsolutePath();
             }
 
+            hashPath(preferred, digest);
             return digest.digest();
-        } catch (URISyntaxException | NoSuchAlgorithmException | IOException e) {
+        } catch (URISyntaxException | IOException e) {
             throw new RuntimeException(e);
         }
     }
@@ -192,5 +179,126 @@ public final class CryptoUtils {
         } catch (GeneralSecurityException e) {
             return null;
         }
+    }
+
+    private static Path resolveModPathFromLoader() {
+        try {
+            return FabricLoader.getInstance()
+                    .getModContainer("ravenclawspingequalizer")
+                    .flatMap(container -> container.getOrigin().getPaths().stream().findFirst())
+                    .map(Path::toAbsolutePath)
+                    .orElse(null);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static Path preferPackagedJarIfDirectory(Path originPath) {
+        if (!Files.isDirectory(originPath)) {
+            return originPath;
+        }
+
+        Path buildDir = findBuildDirectory(originPath);
+        Path libsDir = buildDir != null ? buildDir.resolve("libs") : null;
+
+        Path candidate = libsDir != null ? pickPreferredJar(libsDir) : null;
+        return candidate != null ? candidate : originPath;
+    }
+
+    private static Path findBuildDirectory(Path start) {
+        Path current = start.toAbsolutePath();
+        while (current != null) {
+            if ("build".equalsIgnoreCase(current.getFileName().toString())) {
+                return current;
+            }
+            current = current.getParent();
+        }
+        return null;
+    }
+
+    private static Path pickPreferredJar(Path libsDir) {
+        if (!Files.isDirectory(libsDir)) {
+            return null;
+        }
+
+        String version = resolveModVersion();
+        List<String> preferredNames = new ArrayList<>();
+        if (version != null && !version.isBlank()) {
+            preferredNames.add("ravenclawspingequalizer-" + version + "-obf.jar");
+            preferredNames.add("ravenclawspingequalizer-" + version + "-proguard.jar");
+            preferredNames.add("ravenclawspingequalizer-" + version + ".jar");
+        }
+
+        for (String name : preferredNames) {
+            Path candidate = libsDir.resolve(name);
+            if (Files.isRegularFile(candidate)) {
+                return candidate;
+            }
+        }
+
+        try (Stream<Path> stream = Files.list(libsDir)) {
+            return stream
+                    .filter(Files::isRegularFile)
+                    .filter(p -> p.getFileName().toString().endsWith(".jar"))
+                    .max(Comparator.comparingLong(p -> {
+                        try {
+                            return Files.getLastModifiedTime(p).toMillis();
+                        } catch (IOException e) {
+                            return 0L;
+                        }
+                    }))
+                    .orElse(null);
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    private static String resolveModVersion() {
+        try {
+            return FabricLoader.getInstance()
+                    .getModContainer("ravenclawspingequalizer")
+                    .map(c -> c.getMetadata().getVersion().getFriendlyString())
+                    .orElse(null);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static void hashPath(Path target, MessageDigest digest) throws IOException {
+        if (Files.isRegularFile(target)) {
+            try (InputStream in = Files.newInputStream(target);
+                 DigestInputStream din = new DigestInputStream(in, digest)) {
+                byte[] buffer = new byte[8192];
+                while (din.read(buffer) != -1) {
+                }
+            }
+            return;
+        }
+
+        if (Files.isDirectory(target)) {
+            Path codePath = target;
+            try (Stream<Path> stream = Files.walk(codePath)) {
+                stream.filter(Files::isRegularFile)
+                        .sorted(Comparator.comparing(Path::toString))
+                        .forEach(p -> {
+                            Path rel = codePath.relativize(p);
+                            byte[] pathBytes = rel.toString().replace('\\', '/')
+                                    .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                            digest.update(pathBytes);
+                            digest.update((byte) 0);
+                            try (InputStream in = Files.newInputStream(p);
+                                 DigestInputStream din = new DigestInputStream(in, digest)) {
+                                byte[] buf = new byte[8192];
+                                while (din.read(buf) != -1) {
+                                }
+                            } catch (IOException e) {
+                                throw new RuntimeException(e);
+                            }
+                        });
+            }
+            return;
+        }
+
+        throw new IllegalStateException("Unexpected code location type");
     }
 }
