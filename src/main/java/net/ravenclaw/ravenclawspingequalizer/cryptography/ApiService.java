@@ -16,7 +16,7 @@ import com.google.gson.JsonParser;
 
 public final class ApiService {
 
-    private static final String DEFAULT_API_BASE_URL = "http://localhost:3000";
+    private static final String DEFAULT_API_BASE_URL = "";
     private static final String TUNNEL_URL_GIST_ID = "0de120a0cfc62d7a98f7b0c752602293";
     private static final String TUNNEL_URL_GIST_FILENAME = "tunnel-url.txt";
     private static final String TUNNEL_URL_GIST_API =
@@ -301,6 +301,9 @@ public final class ApiService {
 
     private static String httpGetApiPath(String path) throws IOException {
         String currentBase = getApiBaseUrl();
+        if (currentBase == null || currentBase.isBlank()) {
+            throw new IOException("API base URL not configured");
+        }
         try {
             return httpGet(currentBase + path);
         } catch (IOException first) {
@@ -320,6 +323,9 @@ public final class ApiService {
 
     private static String httpPostApiPath(String path, String jsonPayload) throws IOException {
         String currentBase = getApiBaseUrl();
+        if (currentBase == null || currentBase.isBlank()) {
+            throw new IOException("API base URL not configured");
+        }
         try {
             return httpPost(currentBase + path, jsonPayload);
         } catch (IOException first) {
@@ -376,18 +382,14 @@ public final class ApiService {
             return null;
         }
 
-        if (!DEFAULT_API_BASE_URL.equals(currentBaseUrl)) {
-            return DEFAULT_API_BASE_URL;
-        }
-
         String cached = cachedRemoteBaseUrl;
-        if (cached != null && !cached.isBlank() && !DEFAULT_API_BASE_URL.equals(cached)) {
+        if (cached != null && !cached.isBlank()) {
             return cached;
         }
 
         try {
             String remote = normalizeBaseUrl(loadTunnelUrlFromGist());
-            if (remote != null && !DEFAULT_API_BASE_URL.equals(remote)) {
+            if (remote != null && !remote.isBlank()) {
                 cachedRemoteBaseUrl = remote;
                 return remote;
             }
@@ -517,34 +519,6 @@ public final class ApiService {
             return null;
         }
 
-        if (lowerScheme.equals("http")) {
-            String lowerHost = host.toLowerCase();
-            boolean allowHttp = false;
-
-            if (lowerHost.equals("localhost") || lowerHost.equals("127.0.0.1") || lowerHost.equals("0.0.0.0") ||
-                lowerHost.equals("::1") || lowerHost.equals("[::1]")) {
-                allowHttp = true;
-            } else if (lowerHost.matches("\\d{1,3}(?:\\.\\d{1,3}){3}")) {
-                String[] parts = lowerHost.split("\\.");
-                int a = Integer.parseInt(parts[0]);
-                int b = Integer.parseInt(parts[1]);
-                int c = Integer.parseInt(parts[2]);
-                int d = Integer.parseInt(parts[3]);
-                boolean valid = a >= 0 && a <= 255 && b >= 0 && b <= 255 && c >= 0 && c <= 255 && d >= 0 && d <= 255;
-                if (valid) {
-                    boolean rfc1918 = (a == 10) ||
-                        (a == 172 && b >= 16 && b <= 31) ||
-                        (a == 192 && b == 168);
-                    boolean loopback = a == 127;
-                    boolean linkLocal = a == 169 && b == 254;
-                    allowHttp = rfc1918 || loopback || linkLocal;
-                }
-            }
-
-            if (!allowHttp) {
-                return null;
-            }
-        }
         return candidate;
     }
 }

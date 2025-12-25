@@ -1,5 +1,7 @@
 package net.ravenclaw.ravenclawspingequalizer.cryptography;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.PrivateKey;
@@ -12,6 +14,7 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.session.Session;
 import net.fabricmc.loader.api.FabricLoader;
 import java.util.Locale;
+import com.mojang.authlib.minecraft.MinecraftSessionService;
 
 public class CryptoHandler {
 
@@ -40,6 +43,8 @@ public class CryptoHandler {
     private final Deque<Long> heartbeatTimestamps = new ArrayDeque<>();
     private final Deque<Long> commandHeartbeatTimestamps = new ArrayDeque<>();
     private long spamCooldownUntil = 0;
+    // Bridge session service access across 1.21.x where client APIs moved.
+    private static final SessionServiceResolver SESSION_SERVICE_RESOLVER = new SessionServiceResolver();
 
     public CryptoHandler() {
         modHash = CryptoUtils.bytesToHex(CryptoUtils.calculateModHash()).toUpperCase(Locale.ROOT);
@@ -130,7 +135,8 @@ public class CryptoHandler {
         if (username == null || playerUuid == null) return;
 
         String accessToken = session.getAccessToken();
-        var sessionService = client.getSessionService();
+        MinecraftSessionService sessionService = SESSION_SERVICE_RESOLVER.resolve(client);
+        if (sessionService == null) return;
 
         attestationInProgress = true;
         String serverId = generateRandomServerId();
@@ -411,5 +417,114 @@ public class CryptoHandler {
 
     String getKey() {
         return this.reconstructedKey;
+    }
+
+    private static final class SessionServiceResolver {
+        private final Method directGetter;
+        private final Field servicesField;
+        private final Method servicesGetter;
+        private final Method servicesSessionServiceGetter;
+
+        private SessionServiceResolver() {
+            Method direct = findDirectGetter();
+            if (direct != null) {
+                this.directGetter = direct;
+                this.servicesField = null;
+                this.servicesGetter = null;
+                this.servicesSessionServiceGetter = null;
+                return;
+            }
+
+            Field servicesFieldCandidate = null;
+            Method servicesGetterCandidate = null;
+            Method servicesSessionGetterCandidate = null;
+
+            for (Field field : MinecraftClient.class.getDeclaredFields()) {
+                Method candidate = findSessionServiceGetter(field.getType());
+                if (candidate != null) {
+                    servicesFieldCandidate = field;
+                    servicesSessionGetterCandidate = candidate;
+                    break;
+                }
+            }
+
+            if (servicesSessionGetterCandidate == null) {
+                for (Method method : MinecraftClient.class.getDeclaredMethods()) {
+                    if (method.getParameterCount() != 0) {
+                        continue;
+                    }
+                    Method candidate = findSessionServiceGetter(method.getReturnType());
+                    if (candidate != null) {
+                        servicesGetterCandidate = method;
+                        servicesSessionGetterCandidate = candidate;
+                        break;
+                    }
+                }
+            }
+
+            if (servicesFieldCandidate != null) {
+                servicesFieldCandidate.setAccessible(true);
+            }
+            if (servicesGetterCandidate != null) {
+                servicesGetterCandidate.setAccessible(true);
+            }
+            if (servicesSessionGetterCandidate != null) {
+                servicesSessionGetterCandidate.setAccessible(true);
+            }
+
+            this.directGetter = null;
+            this.servicesField = servicesFieldCandidate;
+            this.servicesGetter = servicesGetterCandidate;
+            this.servicesSessionServiceGetter = servicesSessionGetterCandidate;
+        }
+
+        MinecraftSessionService resolve(MinecraftClient client) {
+            if (client == null) {
+                return null;
+            }
+            try {
+                if (directGetter != null) {
+                    return (MinecraftSessionService) directGetter.invoke(client);
+                }
+                Object servicesHolder = null;
+                if (servicesField != null) {
+                    servicesHolder = servicesField.get(client);
+                } else if (servicesGetter != null) {
+                    servicesHolder = servicesGetter.invoke(client);
+                }
+                if (servicesHolder != null && servicesSessionServiceGetter != null) {
+                    return (MinecraftSessionService) servicesSessionServiceGetter.invoke(servicesHolder);
+                }
+            } catch (ReflectiveOperationException ignored) {
+            }
+            return null;
+        }
+
+        private static Method findDirectGetter() {
+            for (Method method : MinecraftClient.class.getMethods()) {
+                if (method.getParameterCount() != 0) {
+                    continue;
+                }
+                if (MinecraftSessionService.class.isAssignableFrom(method.getReturnType())) {
+                    return method;
+                }
+            }
+            return null;
+        }
+
+        private static Method findSessionServiceGetter(Class<?> type) {
+            if (type == null) {
+                return null;
+            }
+            for (Method method : type.getDeclaredMethods()) {
+                if (method.getParameterCount() != 0) {
+                    continue;
+                }
+                if (MinecraftSessionService.class.isAssignableFrom(method.getReturnType())) {
+                    return method;
+                }
+            }
+            return null;
+        }
     }
 }
