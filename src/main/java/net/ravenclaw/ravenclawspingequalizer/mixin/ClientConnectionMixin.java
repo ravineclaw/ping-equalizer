@@ -41,6 +41,12 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
     private boolean pingEqualizer$enteredPlay = false;
 
     @Unique
+    private boolean pingEqualizer$reconfiguring = false;
+
+    @Unique
+    private NetworkPhase pingEqualizer$lastPhase = null;
+
+    @Unique
     private boolean pingEqualizer$isClientboundConnection() {
         return this.side == NetworkSide.CLIENTBOUND;
     }
@@ -126,12 +132,17 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
 
     @Unique
     private void pingEqualizer$handlePhaseTransition(NetworkPhase phase) {
-        boolean playPhase = phase == NetworkPhase.PLAY;
-        if (playPhase) {
-            pingEqualizer$enterPlay();
+        if (phase == NetworkPhase.PLAY) {
+            boolean reset = !pingEqualizer$reconfiguring;
+            pingEqualizer$enterPlay(reset);
+            pingEqualizer$reconfiguring = false;
         } else {
-            pingEqualizer$leavePlay();
+            if (phase == NetworkPhase.CONFIGURATION && pingEqualizer$lastPhase == NetworkPhase.PLAY) {
+                pingEqualizer$reconfiguring = true;
+            }
+            pingEqualizer$leavePlay(phase != NetworkPhase.CONFIGURATION);
         }
+        pingEqualizer$lastPhase = phase;
     }
 
     @Override
@@ -139,13 +150,15 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
         if (!pingEqualizer$isClientboundConnection()) {
             return;
         }
-        pingEqualizer$enterPlay();
+        pingEqualizer$enterPlay(true);
     }
 
     @Unique
-    private void pingEqualizer$enterPlay() {
-        if (!pingEqualizer$enteredPlay) {
+    private void pingEqualizer$enterPlay(boolean resetState) {
+        if (!pingEqualizer$enteredPlay && resetState) {
             pingEqualizer$enteredPlay = true;
+            PingEqualizerState.getInstance().prepareForNewPlaySession();
+        } else if (resetState) {
             PingEqualizerState.getInstance().prepareForNewPlaySession();
         }
         if (pingEqualizer$channelHandler != null) {
@@ -154,11 +167,11 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
     }
 
     @Unique
-    private void pingEqualizer$leavePlay() {
+    private void pingEqualizer$leavePlay(boolean suspendState) {
         if (pingEqualizer$channelHandler != null) {
             pingEqualizer$channelHandler.setActive(false);
         }
-        if (pingEqualizer$enteredPlay) {
+        if (pingEqualizer$enteredPlay && suspendState) {
             PingEqualizerState.getInstance().suspendForProtocolChange();
             pingEqualizer$enteredPlay = false;
         }
