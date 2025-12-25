@@ -57,8 +57,8 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                 MinecraftClient mc = MinecraftClient.getInstance();
                 if (mc.getNetworkHandler() != null) {
                     for (PlayerListEntry entry : mc.getNetworkHandler().getPlayerList()) {
-                        String name = entry.getProfile().getName();
-                        if (name.toLowerCase().startsWith(builder.getRemainingLowerCase())) {
+                        String name = resolveProfileName(entry.getProfile());
+                        if (name != null && name.toLowerCase().startsWith(builder.getRemainingLowerCase())) {
                             builder.suggest(name);
                         }
                     }
@@ -350,6 +350,32 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
             }
         }
 
+        return null;
+    }
+
+    private String resolveProfileName(Object profile) {
+        if (profile == null) {
+            return null;
+        }
+        try {
+            java.lang.reflect.Method getName = profile.getClass().getMethod("getName");
+            Object value = getName.invoke(profile);
+            return value != null ? value.toString() : null;
+        } catch (ReflectiveOperationException ignored) {
+        }
+        try {
+            java.lang.reflect.Method name = profile.getClass().getMethod("name");
+            Object value = name.invoke(profile);
+            return value != null ? value.toString() : null;
+        } catch (ReflectiveOperationException ignored) {
+        }
+        try {
+            java.lang.reflect.Field field = profile.getClass().getDeclaredField("name");
+            field.setAccessible(true);
+            Object value = field.get(profile);
+            return value != null ? value.toString() : null;
+        } catch (ReflectiveOperationException ignored) {
+        }
         return null;
     }
 
