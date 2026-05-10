@@ -460,7 +460,6 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
             case "off" -> "OFF";
             case "add" -> "ADD";
             case "total" -> "TOTAL";
-            case "match" -> "MATCH";
             default -> mode.toUpperCase();
         };
     }

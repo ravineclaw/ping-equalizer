@@ -12,7 +12,7 @@ import net.minecraft.network.packet.s2c.query.PingResultS2CPacket;
 import net.minecraft.util.Util;
 
 public class PingEqualizerState {
-    public enum Mode { OFF, ADD, TOTAL, MATCH }
+    public enum Mode { OFF, ADD, TOTAL }
 
     private static final PingEqualizerState INSTANCE = new PingEqualizerState();
 
@@ -23,17 +23,12 @@ public class PingEqualizerState {
     private static final int DELAY_QUANTUM_MS = 2;
     private static final double BASE_PING_ALPHA = 0.07;
     private static final double BASE_PING_MAX_STEP_MS = 25.0;
-    private static final long MATCH_TARGET_RESET_MS = 5000;
-    private static final int MATCH_TARGET_NOISE_FLOOR_MS = 3;
-    private static final int MATCH_TARGET_MIN_STEP_MS = 1;
-    private static final int MATCH_TARGET_MAX_STEP_MS = 75;
-    private static final double MATCH_TARGET_RATE_MS_PER_SECOND = 25.0;
     private static final int BASE_FILTER_WINDOW = 5;
+    private static final int MAX_ADDED_PING_MS = 400;
 
     private Mode currentMode = Mode.OFF;
     private int addAmount = 0;
     private int totalTarget = 0;
-    private String matchPlayerName = "";
 
     private long currentDelayMs = 0;
     private double preciseDelay = 0;
@@ -44,9 +39,6 @@ public class PingEqualizerState {
     private long lastBasePingSampleTime = 0;
     private long lastPingRequestTime = 0;
     private boolean awaitingBasePing = false;
-
-    private double matchSmoothedTarget = -1;
-    private long matchTargetLastUpdate = 0;
 
     private long lastMeasuredRtt = -1;
 
@@ -71,12 +63,11 @@ public class PingEqualizerState {
         currentDelayMs = 0;
         preciseDelay = 0;
         resetMeasurementState();
-        resetMatchSmoother();
     }
 
     public void setAddPing(int amount) {
         currentMode = Mode.ADD;
-        addAmount = Math.max(0, amount);
+        addAmount = clampAddedPing(amount);
         preciseDelay = addAmount;
         currentDelayMs = quantizeDelayMs(preciseDelay);
         lastDelayUpdateTimeMs = Util.getMeasuringTimeMs();
@@ -99,13 +90,13 @@ public class PingEqualizerState {
         int baseEstimate = estimateInitialBasePing(client);
         if (baseEstimate > 0) {
             seedBaseEstimate(baseEstimate);
-            double targetDelay = Math.max(0, totalTarget - baseEstimate);
+            double targetDelay = clampAddedPing((int) Math.max(0, totalTarget - baseEstimate));
             if (!preserveDelay || targetDelay > preciseDelay) {
                 preciseDelay = targetDelay;
             }
             currentDelayMs = quantizeDelayMs(preciseDelay);
         } else if (!preserveDelay) {
-            preciseDelay = totalTarget;
+            preciseDelay = clampAddedPing(totalTarget);
             currentDelayMs = quantizeDelayMs(preciseDelay);
         }
 
@@ -115,27 +106,12 @@ public class PingEqualizerState {
         }
     }
 
-    public void setMatchPing(String playerName) {
-        currentMode = Mode.MATCH;
-        matchPlayerName = playerName == null ? "" : playerName.trim();
-        resetMatchSmoother();
-
-        MinecraftClient client = MinecraftClient.getInstance();
-        ClientPlayNetworkHandler handler = client == null ? null : client.getNetworkHandler();
-        if (handler != null) {
-            requestPingIfNeeded(handler, true);
-        }
-        updateDelay(client);
-    }
-
     public void suspendForProtocolChange() {
         resetMeasurementState();
-        resetMatchSmoother();
     }
 
     public void prepareForNewPlaySession() {
         resetMeasurementState();
-        resetMatchSmoother();
         if (currentMode == Mode.ADD) {
             preciseDelay = addAmount;
             currentDelayMs = quantizeDelayMs(preciseDelay);
@@ -210,11 +186,6 @@ public class PingEqualizerState {
         updateDelay(client);
     }
 
-    private void resetMatchSmoother() {
-        matchSmoothedTarget = -1;
-        matchTargetLastUpdate = 0;
-    }
-
     private boolean hasFreshBase(long now) {
         return lastValidBasePing > 0 && now - lastBasePingSampleTime <= BASE_PING_MAX_AGE_MS;
     }
@@ -257,7 +228,6 @@ public class PingEqualizerState {
     private int computeTargetPing(ClientPlayNetworkHandler handler, int basePing) {
         return switch (currentMode) {
             case TOTAL -> totalTarget > 0 ? totalTarget : basePing;
-            case MATCH -> computeMatchTarget(handler);
             default -> -1;
         };
     }
@@ -269,7 +239,7 @@ public class PingEqualizerState {
         }
 
         if (currentMode == Mode.ADD) {
-            preciseDelay = addAmount;
+            preciseDelay = clampAddedPing(addAmount);
             currentDelayMs = quantizeDelayMs(preciseDelay);
             return;
         }
@@ -299,7 +269,7 @@ public class PingEqualizerState {
             return;
         }
 
-        long targetDelay = Math.max(0, targetPing - basePing);
+        long targetDelay = clampAddedPing((int) Math.max(0, targetPing - basePing));
         adjustPreciseDelaySmoothly(targetDelay);
         setCurrentDelayQuantized(now, quantizeDelayMs(preciseDelay));
     }
@@ -342,6 +312,10 @@ public class PingEqualizerState {
         return Math.max(0, quantized);
     }
 
+    private static int clampAddedPing(int amount) {
+        return Math.min(MAX_ADDED_PING_MS, Math.max(0, amount));
+    }
+
     public String getStatusMessage() {
         if (currentMode == Mode.OFF) {
             return "Ping Equalizer: OFF";
@@ -351,7 +325,6 @@ public class PingEqualizerState {
         String modeStr = switch (currentMode) {
             case ADD -> "ADD +" + addAmount + "ms";
             case TOTAL -> "TOTAL " + totalTarget + "ms";
-            case MATCH -> "MATCH " + matchPlayerName;
             default -> "OFF";
         };
 
@@ -374,7 +347,6 @@ public class PingEqualizerState {
             case OFF -> "PE Status; OFF";
             case ADD -> String.format("PE Status; ADD: %d ms", currentDelayMs);
             case TOTAL -> String.format("PE Status; Total: %d ms", totalTarget);
-            case MATCH -> String.format("PE Status; Match: %s", matchPlayerName);
         };
     }
 
@@ -431,48 +403,6 @@ public class PingEqualizerState {
         if (Math.abs(targetDelayMs - preciseDelay) < 0.5) {
             preciseDelay = targetDelayMs;
         }
-    }
-
-    private int computeMatchTarget(ClientPlayNetworkHandler handler) {
-        PlayerListEntry entry = findMatchEntry(handler);
-        if (entry == null) {
-            return -1;
-        }
-        int raw = entry.getLatency();
-        if (raw <= 0) {
-            return -1;
-        }
-        long now = Util.getMeasuringTimeMs();
-        if (matchSmoothedTarget < 0 || now - matchTargetLastUpdate > MATCH_TARGET_RESET_MS) {
-            matchSmoothedTarget = raw;
-            matchTargetLastUpdate = now;
-            return raw;
-        }
-        double delta = raw - matchSmoothedTarget;
-        if (Math.abs(delta) > MATCH_TARGET_NOISE_FLOOR_MS) {
-            double elapsedSeconds = Math.max(0, (now - matchTargetLastUpdate) / 1000.0);
-            double allowed = elapsedSeconds * MATCH_TARGET_RATE_MS_PER_SECOND;
-            allowed = Math.max(MATCH_TARGET_MIN_STEP_MS, Math.min(allowed, MATCH_TARGET_MAX_STEP_MS));
-            if (Math.abs(delta) <= allowed) {
-                matchSmoothedTarget = raw;
-            } else {
-                matchSmoothedTarget += Math.copySign(allowed, delta);
-            }
-        }
-        matchTargetLastUpdate = now;
-        return (int)Math.round(matchSmoothedTarget);
-    }
-
-    private PlayerListEntry findMatchEntry(ClientPlayNetworkHandler handler) {
-        if (matchPlayerName == null || matchPlayerName.isEmpty()) {
-            return null;
-        }
-        for (PlayerListEntry entry : handler.getPlayerList()) {
-            if (entry.getProfile().getName().equalsIgnoreCase(matchPlayerName)) {
-                return entry;
-            }
-        }
-        return null;
     }
 
     public void recordPingOutboundDelay(long startTime, long delayMs) {

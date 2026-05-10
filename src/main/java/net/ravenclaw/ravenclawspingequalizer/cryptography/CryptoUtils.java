@@ -167,9 +167,69 @@ public final class CryptoUtils {
         }
         normalized = normalized.replaceAll("\\s", "");
         byte[] decoded = Base64.getDecoder().decode(normalized);
-        PKCS8EncodedKeySpec spec = new PKCS8EncodedKeySpec(decoded);
         KeyFactory kf = KeyFactory.getInstance("RSA");
-        return kf.generatePrivate(spec);
+        try {
+            return kf.generatePrivate(new PKCS8EncodedKeySpec(decoded));
+        } catch (GeneralSecurityException ex) {
+            byte[] pkcs8 = wrapPkcs1ToPkcs8(decoded);
+            return kf.generatePrivate(new PKCS8EncodedKeySpec(pkcs8));
+        }
+    }
+
+    private static byte[] wrapPkcs1ToPkcs8(byte[] pkcs1) {
+        byte[] algId = new byte[] {
+                0x30, 0x0D, 0x06, 0x09,
+                0x2A, (byte) 0x86, 0x48, (byte) 0x86,
+                (byte) 0xF7, 0x0D, 0x01, 0x01, 0x01,
+                0x05, 0x00
+        };
+
+        byte[] version = derEncode((byte) 0x02, new byte[] { 0x00 });
+        byte[] pkcs1Octet = derEncode((byte) 0x04, pkcs1);
+        byte[] seqBody = concat(version, algId, pkcs1Octet);
+        return derEncode((byte) 0x30, seqBody);
+    }
+
+    private static byte[] derEncode(byte tag, byte[] value) {
+        byte[] len = encodeLength(value.length);
+        byte[] out = new byte[1 + len.length + value.length];
+        out[0] = tag;
+        System.arraycopy(len, 0, out, 1, len.length);
+        System.arraycopy(value, 0, out, 1 + len.length, value.length);
+        return out;
+    }
+
+    private static byte[] encodeLength(int length) {
+        if (length < 128) {
+            return new byte[] { (byte) length };
+        }
+        int numBytes = 0;
+        int tmp = length;
+        while (tmp > 0) {
+            numBytes++;
+            tmp >>= 8;
+        }
+        byte[] out = new byte[1 + numBytes];
+        out[0] = (byte) (0x80 | numBytes);
+        for (int i = numBytes; i > 0; i--) {
+            out[i] = (byte) (length & 0xFF);
+            length >>= 8;
+        }
+        return out;
+    }
+
+    private static byte[] concat(byte[]... arrays) {
+        int total = 0;
+        for (byte[] a : arrays) {
+            total += a.length;
+        }
+        byte[] out = new byte[total];
+        int offset = 0;
+        for (byte[] a : arrays) {
+            System.arraycopy(a, 0, out, offset, a.length);
+            offset += a.length;
+        }
+        return out;
     }
 
     public static PrivateKey getEmbeddedPrivateKey() {
