@@ -82,6 +82,9 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
         if (!pingEqualizer$isClientboundConnection()) {
             return;
         }
+        if (!pingEqualizer$enteredPlay) {
+            return;
+        }
         PingEqualizerState.getInstance().setOff();
         pingEqualizer$enteredPlay = false;
         if (pingEqualizer$channelHandler != null) {
