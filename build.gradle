@@ -3,7 +3,9 @@ plugins {
     id 'maven-publish'
 }
 
-version = project.mod_version
+// Use mod_version plus the target Minecraft version as a +suffix so JARs are
+// named like archives_base_name-mod_version+minecraft_version.jar
+version = "${project.mod_version}+${project.minecraft_version}"
 group = project.maven_group
 
 base {
