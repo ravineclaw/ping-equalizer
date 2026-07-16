@@ -15,7 +15,10 @@ import net.minecraft.network.ClientConnection;
 import net.minecraft.network.NetworkPhase;
 import net.minecraft.network.NetworkSide;
 import net.minecraft.network.NetworkState;
+import net.minecraft.network.PacketCallbacks;
 import net.minecraft.network.listener.PacketListener;
+import net.minecraft.network.packet.Packet;
+import net.minecraft.network.packet.c2s.query.QueryPingC2SPacket;
 import net.minecraft.text.Text;
 import net.ravenclaw.ravenclawspingequalizer.PingEqualizerState;
 import net.ravenclaw.ravenclawspingequalizer.bridge.PingEqualizerConnectionBridge;
@@ -42,6 +45,9 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
 
     @Unique
     private boolean pingEqualizer$reconfiguring = false;
+
+    @Unique
+    private boolean pingEqualizer$sendingFallbackPacket = false;
 
     @Unique
     private NetworkPhase pingEqualizer$lastPhase = null;
@@ -115,6 +121,50 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
             } catch (Exception ignored) {
             }
         }
+    }
+
+    @Inject(method = "send(Lnet/minecraft/network/packet/Packet;Lnet/minecraft/network/PacketCallbacks;Z)V", at = @At("HEAD"), cancellable = true, require = 0)
+    private void pingEqualizer$delaySendFallback(Packet<?> packet, PacketCallbacks callbacks, boolean flush, CallbackInfo ci) {
+        if (pingEqualizer$sendingFallbackPacket || !pingEqualizer$isClientboundConnection()) {
+            return;
+        }
+        if (!pingEqualizer$enteredPlay || channel == null || !channel.isOpen()) {
+            return;
+        }
+        if (pingEqualizer$hasPipelineHandler()) {
+            return;
+        }
+
+        PingEqualizerState state = PingEqualizerState.getInstance();
+        if (state.getMode() == PingEqualizerState.Mode.OFF) {
+            return;
+        }
+
+        long delayMs = state.getOutboundDelayPortion();
+        if (delayMs <= 0) {
+            return;
+        }
+
+        if (packet instanceof QueryPingC2SPacket ping) {
+            state.onPingSent(ping.getStartTime());
+            state.recordPingOutboundDelay(ping.getStartTime(), delayMs);
+        }
+
+        ci.cancel();
+        channel.eventLoop().schedule(() -> {
+            if (!channel.isOpen()) {
+                return;
+            }
+            try {
+                if (packet instanceof QueryPingC2SPacket ping) {
+                    PingEqualizerState.getInstance().onPingActuallySent(ping.getStartTime());
+                }
+                pingEqualizer$sendingFallbackPacket = true;
+                ((ClientConnection) (Object) this).send(packet, callbacks, flush);
+            } finally {
+                pingEqualizer$sendingFallbackPacket = false;
+            }
+        }, delayMs, java.util.concurrent.TimeUnit.MILLISECONDS);
     }
 
     @Inject(method = "transitionInbound", at = @At("HEAD"), require = 0)
@@ -200,6 +250,13 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
             pipeline.addLast(PingEqualizerChannelHandler.HANDLER_NAME, pingEqualizer$channelHandler);
         }
         return true;
+    }
+
+    @Unique
+    private boolean pingEqualizer$hasPipelineHandler() {
+        return channel != null
+                && channel.pipeline() != null
+                && channel.pipeline().get(PingEqualizerChannelHandler.HANDLER_NAME) != null;
     }
 
     @Unique
