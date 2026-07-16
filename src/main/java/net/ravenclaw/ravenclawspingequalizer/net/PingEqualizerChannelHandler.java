@@ -7,11 +7,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPromise;
-import net.minecraft.network.packet.Packet;
-import net.minecraft.network.packet.c2s.common.KeepAliveC2SPacket;
-import net.minecraft.network.packet.c2s.query.QueryPingC2SPacket;
-import net.minecraft.network.packet.s2c.common.KeepAliveS2CPacket;
-import net.minecraft.network.packet.s2c.query.PingResultS2CPacket;
+import net.minecraft.network.protocol.Packet;
+import net.minecraft.network.protocol.ping.ClientboundPongResponsePacket;
+import net.minecraft.network.protocol.ping.ServerboundPingRequestPacket;
 import net.ravenclaw.ravenclawspingequalizer.PingEqualizerState;
 
 public class PingEqualizerChannelHandler extends ChannelDuplexHandler {
@@ -81,14 +79,14 @@ public class PingEqualizerChannelHandler extends ChannelDuplexHandler {
             return;
         }
 
-        if (packet instanceof QueryPingC2SPacket qp) {
-            PingEqualizerState.getInstance().onPingSent(qp.getStartTime());
+        if (packet instanceof ServerboundPingRequestPacket qp) {
+            PingEqualizerState.getInstance().onPingSent(qp.getTime());
         }
 
         PingEqualizerState state = PingEqualizerState.getInstance();
         if (state.getMode() == PingEqualizerState.Mode.OFF && outboundQueue.isEmpty()) {
-            if (packet instanceof QueryPingC2SPacket qp) {
-                PingEqualizerState.getInstance().onPingActuallySent(qp.getStartTime());
+            if (packet instanceof ServerboundPingRequestPacket qp) {
+                PingEqualizerState.getInstance().onPingActuallySent(qp.getTime());
             }
             super.write(ctx, msg, promise);
             return;
@@ -97,15 +95,15 @@ public class PingEqualizerChannelHandler extends ChannelDuplexHandler {
         long delay = state.getOutboundDelayPortion();
 
         if (delay <= 0 && outboundQueue.isEmpty()) {
-            if (packet instanceof QueryPingC2SPacket qp) {
-                PingEqualizerState.getInstance().onPingActuallySent(qp.getStartTime());
+            if (packet instanceof ServerboundPingRequestPacket qp) {
+                PingEqualizerState.getInstance().onPingActuallySent(qp.getTime());
             }
             super.write(ctx, msg, promise);
             return;
         }
 
-        if (packet instanceof QueryPingC2SPacket qp) {
-            PingEqualizerState.getInstance().recordPingOutboundDelay(qp.getStartTime(), delay);
+        if (packet instanceof ServerboundPingRequestPacket qp) {
+            PingEqualizerState.getInstance().recordPingOutboundDelay(qp.getTime(), delay);
         }
 
         queueOutbound(ctx, msg, promise, delay);
@@ -146,8 +144,8 @@ public class PingEqualizerChannelHandler extends ChannelDuplexHandler {
                 if (delayNanos <= 0) {
                     outboundQueue.poll();
                     if (ctx.channel().isOpen()) {
-                        if (task.msg instanceof QueryPingC2SPacket qp) {
-                            PingEqualizerState.getInstance().onPingActuallySent(qp.getStartTime());
+                        if (task.msg instanceof ServerboundPingRequestPacket qp) {
+                            PingEqualizerState.getInstance().onPingActuallySent(qp.getTime());
                         }
                         ctx.write(task.msg, task.promise);
                         wrote = true;
@@ -190,8 +188,8 @@ public class PingEqualizerChannelHandler extends ChannelDuplexHandler {
 
         PingEqualizerState state = PingEqualizerState.getInstance();
         if (state.getMode() == PingEqualizerState.Mode.OFF && inboundQueue.isEmpty()) {
-            if (packet instanceof PingResultS2CPacket pingResult) {
-                state.onPingArrived(pingResult.startTime());
+            if (packet instanceof ClientboundPongResponsePacket pingResult) {
+                state.onPingArrived(pingResult.time());
                 state.handlePingResult(pingResult);
             }
             super.channelRead(ctx, msg);
@@ -201,16 +199,16 @@ public class PingEqualizerChannelHandler extends ChannelDuplexHandler {
         long delay = state.getInboundDelayPortion();
 
         if (delay <= 0 && inboundQueue.isEmpty()) {
-            if (packet instanceof PingResultS2CPacket pingResult) {
-                state.onPingArrived(pingResult.startTime());
+            if (packet instanceof ClientboundPongResponsePacket pingResult) {
+                state.onPingArrived(pingResult.time());
                 state.handlePingResult(pingResult);
             }
             super.channelRead(ctx, msg);
             return;
         }
 
-        if (packet instanceof PingResultS2CPacket ping) {
-            PingEqualizerState.getInstance().recordPingInboundDelay(ping.startTime(), delay);
+        if (packet instanceof ClientboundPongResponsePacket ping) {
+            PingEqualizerState.getInstance().recordPingInboundDelay(ping.time(), delay);
         }
 
         queueInbound(ctx, msg, delay);
@@ -247,9 +245,9 @@ public class PingEqualizerChannelHandler extends ChannelDuplexHandler {
                 if (delayNanos <= 0) {
                     inboundQueue.poll();
                     if (ctx.channel().isOpen()) {
-                        if (task.msg instanceof PingResultS2CPacket pingResult) {
+                        if (task.msg instanceof ClientboundPongResponsePacket pingResult) {
                             PingEqualizerState state = PingEqualizerState.getInstance();
-                            state.onPingArrived(pingResult.startTime());
+                            state.onPingArrived(pingResult.time());
                             state.handlePingResult(pingResult);
                         }
                         ctx.fireChannelRead(task.msg);
@@ -274,7 +272,7 @@ public class PingEqualizerChannelHandler extends ChannelDuplexHandler {
     }
 
     private boolean shouldBypassPacket(Packet<?> packet) {
-        return packet.transitionsNetworkState();
+        return packet.isTerminal();
     }
 
     private static void spinWait(long nanos) {

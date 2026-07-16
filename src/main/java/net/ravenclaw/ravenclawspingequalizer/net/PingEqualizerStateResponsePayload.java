@@ -1,9 +1,9 @@
 package net.ravenclaw.ravenclawspingequalizer.net;
 
-import net.minecraft.network.RegistryByteBuf;
-import net.minecraft.network.codec.PacketCodec;
-import net.minecraft.network.packet.CustomPayload;
-import net.minecraft.util.Identifier;
+import net.minecraft.network.RegistryFriendlyByteBuf;
+import net.minecraft.network.codec.StreamCodec;
+import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
+import net.minecraft.resources.Identifier;
 
 public record PingEqualizerStateResponsePayload(
         int requestId,
@@ -12,16 +12,16 @@ public record PingEqualizerStateResponsePayload(
         int currentDelayMs,
         int basePingMs,
         int totalPingMs
-) implements CustomPayload {
-    public static final CustomPayload.Id<PingEqualizerStateResponsePayload> ID =
-            new CustomPayload.Id<>(Identifier.of("ravenclawspingequalizer", "state_response"));
+) implements CustomPacketPayload {
+    public static final CustomPacketPayload.Type<PingEqualizerStateResponsePayload> ID =
+            new CustomPacketPayload.Type<>(Identifier.fromNamespaceAndPath("ravenclawspingequalizer", "state_response"));
 
-    public static final PacketCodec<RegistryByteBuf, PingEqualizerStateResponsePayload> CODEC =
-            PacketCodec.of(
+    public static final StreamCodec<RegistryFriendlyByteBuf, PingEqualizerStateResponsePayload> CODEC =
+            CustomPacketPayload.codec(
                     (payload, buf) -> {
                         buf.writeVarInt(payload.requestId());
                         buf.writeBoolean(payload.serverEnabled());
-                        buf.writeString(payload.mode());
+                        buf.writeUtf(payload.mode());
                         buf.writeVarInt(payload.currentDelayMs());
                         buf.writeVarInt(payload.basePingMs());
                         buf.writeVarInt(payload.totalPingMs());
@@ -29,7 +29,7 @@ public record PingEqualizerStateResponsePayload(
                     buf -> new PingEqualizerStateResponsePayload(
                             buf.readVarInt(),
                             buf.readBoolean(),
-                            buf.readString(),
+                            buf.readUtf(),
                             buf.readVarInt(),
                             buf.readVarInt(),
                             buf.readVarInt()
@@ -37,7 +37,7 @@ public record PingEqualizerStateResponsePayload(
             );
 
     @Override
-    public Id<? extends CustomPayload> getId() {
+    public Type<? extends CustomPacketPayload> type() {
         return ID;
     }
 }

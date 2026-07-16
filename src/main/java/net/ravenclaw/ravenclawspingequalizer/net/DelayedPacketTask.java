@@ -2,7 +2,7 @@ package net.ravenclaw.ravenclawspingequalizer.net;
 
 import org.jetbrains.annotations.Nullable;
 
-import net.minecraft.network.packet.Packet;
+import net.minecraft.network.protocol.Packet;
 
 public final class DelayedPacketTask {
     public final Packet<?> packet;

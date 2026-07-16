@@ -4,15 +4,16 @@ import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.tree.LiteralCommandNode;
 
 import net.fabricmc.api.ClientModInitializer;
-import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
+import net.fabricmc.fabric.api.client.command.v2.ClientCommands;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.text.Text;
+import net.minecraft.client.Minecraft;
+import net.minecraft.network.chat.Component;
+import net.minecraft.world.entity.player.ChatVisiblity;
 import net.ravenclaw.ravenclawspingequalizer.PingEqualizerState;
 import net.ravenclaw.ravenclawspingequalizer.net.PingEqualizerControlPayload;
 import net.ravenclaw.ravenclawspingequalizer.net.PingEqualizerStateQueryPayload;
@@ -24,9 +25,9 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
 
     @Override
     public void onInitializeClient() {
-        PayloadTypeRegistry.playS2C().register(PingEqualizerControlPayload.ID, PingEqualizerControlPayload.CODEC);
-        PayloadTypeRegistry.playS2C().register(PingEqualizerStateQueryPayload.ID, PingEqualizerStateQueryPayload.CODEC);
-        PayloadTypeRegistry.playC2S().register(PingEqualizerStateResponsePayload.ID, PingEqualizerStateResponsePayload.CODEC);
+        PayloadTypeRegistry.clientboundPlay().register(PingEqualizerControlPayload.ID, PingEqualizerControlPayload.CODEC);
+        PayloadTypeRegistry.clientboundPlay().register(PingEqualizerStateQueryPayload.ID, PingEqualizerStateQueryPayload.CODEC);
+        PayloadTypeRegistry.serverboundPlay().register(PingEqualizerStateResponsePayload.ID, PingEqualizerStateResponsePayload.CODEC);
         ClientPlayNetworking.registerGlobalReceiver(PingEqualizerControlPayload.ID, (payload, context) -> {
             context.client().execute(() -> {
                 PingEqualizerState state = PingEqualizerState.getInstance();
@@ -67,9 +68,9 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
 
         ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
             LiteralCommandNode<FabricClientCommandSource> rootNode = dispatcher.register(
-                    ClientCommandManager.literal("pingequalizer")
-                            .then(ClientCommandManager.literal("add")
-                                    .then(ClientCommandManager.argument("amount", IntegerArgumentType.integer(0))
+                    ClientCommands.literal("pingequalizer")
+                            .then(ClientCommands.literal("add")
+                                    .then(ClientCommands.argument("amount", IntegerArgumentType.integer(0))
                                             .executes(ctx -> {
                                                 if (!ensureServerEnabled()) {
                                                     return 0;
@@ -97,8 +98,8 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                                             })
                                     )
                             )
-                            .then(ClientCommandManager.literal("total")
-                                    .then(ClientCommandManager.argument("amount", IntegerArgumentType.integer(0))
+                            .then(ClientCommands.literal("total")
+                                    .then(ClientCommands.argument("amount", IntegerArgumentType.integer(0))
                                             .executes(ctx -> {
                                                 if (!ensureServerEnabled()) {
                                                     return 0;
@@ -126,13 +127,13 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                                             })
                                     )
                             )
-                            .then(ClientCommandManager.literal("status")
+                            .then(ClientCommands.literal("status")
                                     .executes(ctx -> {
                                         sendLocalMessage(PingEqualizerState.getInstance().getStatusMessage());
                                         return 1;
                                     })
                             )
-                            .then(ClientCommandManager.literal("off")
+                            .then(ClientCommands.literal("off")
                                     .executes(ctx -> {
                                         if (!ensureServerEnabled()) {
                                             return 0;
@@ -153,7 +154,7 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
                             )
             );
 
-            dispatcher.register(ClientCommandManager.literal("pe").redirect(rootNode));
+            dispatcher.register(ClientCommands.literal("pe").redirect(rootNode));
         });
     }
 
@@ -174,22 +175,22 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
     }
 
     private static void sendLocalMessage(String message) {
-        MinecraftClient client = MinecraftClient.getInstance();
+        Minecraft client = Minecraft.getInstance();
         if (client.player != null) {
-            client.player.sendMessage(Text.literal(message), false);
+            client.player.sendSystemMessage(Component.literal(message));
         }
     }
 
     private void sendPublicModeAnnouncement(String message) {
-        MinecraftClient client = MinecraftClient.getInstance();
-        if (client == null || client.getNetworkHandler() == null || message == null || message.isEmpty()) {
+        Minecraft client = Minecraft.getInstance();
+        if (client == null || client.getConnection() == null || message == null || message.isEmpty()) {
             return;
         }
         String sanitized = stripFormattingCodes(message.replace("\n", " ").trim());
         if (sanitized.isEmpty()) {
             return;
         }
-        client.getNetworkHandler().sendChatMessage("[Ping Equalizer] " + sanitized);
+        client.getConnection().sendChat("[Ping Equalizer] " + sanitized);
     }
 
     private String stripFormattingCodes(String value) {
@@ -201,16 +202,10 @@ public class RavenclawsPingEqualizerClient implements ClientModInitializer {
     }
 
     private boolean isChatCommandsOnly() {
-        MinecraftClient mc = MinecraftClient.getInstance();
+        Minecraft mc = Minecraft.getInstance();
         if (mc == null || mc.options == null) {
             return false;
         }
-        try {
-            java.lang.reflect.Field f = mc.options.getClass().getField("chatVisibility");
-            Object v = f.get(mc.options);
-            return v != null && "SYSTEM".equalsIgnoreCase(v.toString());
-        } catch (Exception e) {
-            return false;
-        }
+        return mc.options.chatVisibility().get() == ChatVisiblity.SYSTEM;
     }
 }

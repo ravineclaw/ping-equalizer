@@ -1,22 +1,22 @@
 package net.ravenclaw.ravenclawspingequalizer.net;
 
-import net.minecraft.network.RegistryByteBuf;
-import net.minecraft.network.codec.PacketCodec;
-import net.minecraft.network.packet.CustomPayload;
-import net.minecraft.util.Identifier;
+import net.minecraft.network.RegistryFriendlyByteBuf;
+import net.minecraft.network.codec.StreamCodec;
+import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
+import net.minecraft.resources.Identifier;
 
-public record PingEqualizerStateQueryPayload(int requestId) implements CustomPayload {
-    public static final CustomPayload.Id<PingEqualizerStateQueryPayload> ID =
-            new CustomPayload.Id<>(Identifier.of("ravenclawspingequalizer", "state_query"));
+public record PingEqualizerStateQueryPayload(int requestId) implements CustomPacketPayload {
+    public static final CustomPacketPayload.Type<PingEqualizerStateQueryPayload> ID =
+            new CustomPacketPayload.Type<>(Identifier.fromNamespaceAndPath("ravenclawspingequalizer", "state_query"));
 
-    public static final PacketCodec<RegistryByteBuf, PingEqualizerStateQueryPayload> CODEC =
-            PacketCodec.of(
+    public static final StreamCodec<RegistryFriendlyByteBuf, PingEqualizerStateQueryPayload> CODEC =
+            CustomPacketPayload.codec(
                     (payload, buf) -> buf.writeVarInt(payload.requestId()),
                     buf -> new PingEqualizerStateQueryPayload(buf.readVarInt())
             );
 
     @Override
-    public Id<? extends CustomPayload> getId() {
+    public Type<? extends CustomPacketPayload> type() {
         return ID;
     }
 }

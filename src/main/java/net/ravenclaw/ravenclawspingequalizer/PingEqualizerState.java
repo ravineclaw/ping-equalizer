@@ -4,11 +4,11 @@ import java.util.Arrays;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.network.ClientPlayNetworkHandler;
-import net.minecraft.client.network.PlayerListEntry;
-import net.minecraft.network.packet.c2s.query.QueryPingC2SPacket;
-import net.minecraft.network.packet.s2c.query.PingResultS2CPacket;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientPacketListener;
+import net.minecraft.client.multiplayer.PlayerInfo;
+import net.minecraft.network.protocol.ping.ClientboundPongResponsePacket;
+import net.minecraft.network.protocol.ping.ServerboundPingRequestPacket;
 import net.minecraft.util.Util;
 
 public class PingEqualizerState {
@@ -87,7 +87,7 @@ public class PingEqualizerState {
         addAmount = clampAddedPing(amount);
         preciseDelay = addAmount;
         currentDelayMs = quantizeDelayMs(preciseDelay);
-        lastDelayUpdateTimeMs = Util.getMeasuringTimeMs();
+        lastDelayUpdateTimeMs = Util.getMillis();
     }
 
     public void setTotalPing(int target) {
@@ -101,13 +101,13 @@ public class PingEqualizerState {
         currentMode = Mode.TOTAL;
         totalTarget = normalizedTarget;
 
-        long now = Util.getMeasuringTimeMs();
+        long now = Util.getMillis();
         if (!preserveDelay) {
             resetMeasurementState();
         }
         lastDelayUpdateTimeMs = now;
 
-        MinecraftClient client = MinecraftClient.getInstance();
+        Minecraft client = Minecraft.getInstance();
         int baseEstimate = estimateInitialBasePing(client);
         if (baseEstimate > 0) {
             seedBaseEstimate(baseEstimate);
@@ -121,7 +121,7 @@ public class PingEqualizerState {
             currentDelayMs = quantizeDelayMs(preciseDelay);
         }
 
-        ClientPlayNetworkHandler handler = client == null ? null : client.getNetworkHandler();
+        ClientPacketListener handler = client == null ? null : client.getConnection();
         if (handler != null) {
             requestPingIfNeeded(handler, true);
         }
@@ -136,7 +136,7 @@ public class PingEqualizerState {
         if (currentMode == Mode.ADD) {
             preciseDelay = addAmount;
             currentDelayMs = quantizeDelayMs(preciseDelay);
-            lastDelayUpdateTimeMs = Util.getMeasuringTimeMs();
+            lastDelayUpdateTimeMs = Util.getMillis();
         }
     }
 
@@ -147,34 +147,34 @@ public class PingEqualizerState {
         pending.outboundDelayMs = getOutboundDelayPortion();
         pending.inboundDelayMs = getInboundDelayPortion();
         pendingPings.put(startTime, pending);
-        lastPingRequestTime = Util.getMeasuringTimeMs();
+        lastPingRequestTime = Util.getMillis();
         awaitingBasePing = true;
     }
 
     public void onPingActuallySent(long startTime) {
         PendingPing p = pendingPings.get(startTime);
         if (p != null) {
-            p.actualSendTime = Util.getMeasuringTimeMs();
+            p.actualSendTime = Util.getMillis();
         }
     }
 
     public void onPingArrived(long startTime) {
         PendingPing p = pendingPings.get(startTime);
         if (p != null) {
-            p.arrivalTime = Util.getMeasuringTimeMs();
+            p.arrivalTime = Util.getMillis();
         }
     }
 
-    public void handlePingResult(PingResultS2CPacket packet) {
-        PendingPing p = pendingPings.remove(packet.startTime());
+    public void handlePingResult(ClientboundPongResponsePacket packet) {
+        PendingPing p = pendingPings.remove(packet.time());
         if (p == null) {
             return;
         }
 
-        long now = Util.getMeasuringTimeMs();
+        long now = Util.getMillis();
         long arriveTime = p.arrivalTime > 0 ? p.arrivalTime : now;
 
-        long measuredRtt = Math.max(0, arriveTime - packet.startTime());
+        long measuredRtt = Math.max(0, arriveTime - packet.time());
         lastMeasuredRtt = measuredRtt;
 
         long totalRecordedDelay = p.outboundDelayMs + p.inboundDelayMs;
@@ -203,7 +203,7 @@ public class PingEqualizerState {
         awaitingBasePing = false;
     }
 
-    public void tick(MinecraftClient client) {
+    public void tick(Minecraft client) {
         updateDelay(client);
     }
 
@@ -216,16 +216,16 @@ public class PingEqualizerState {
         return (int) Math.round(candidate);
     }
 
-    private int estimateInitialBasePing(MinecraftClient client) {
+    private int estimateInitialBasePing(Minecraft client) {
         int best = getCalibratedBase();
         if (client == null || client.player == null) {
             return best;
         }
-        ClientPlayNetworkHandler handler = client.getNetworkHandler();
+        ClientPacketListener handler = client.getConnection();
         if (handler == null) {
             return best;
         }
-        PlayerListEntry self = handler.getPlayerListEntry(client.player.getUuid());
+        PlayerInfo self = handler.getPlayerInfo(client.player.getUUID());
         if (self != null && self.getLatency() > 0) {
             best = Math.max(best, self.getLatency());
         }
@@ -236,7 +236,7 @@ public class PingEqualizerState {
         if (estimateMs <= 0) {
             return;
         }
-        long now = Util.getMeasuringTimeMs();
+        long now = Util.getMillis();
         lastValidBasePing = Math.max(lastValidBasePing, estimateMs);
         if (smoothedBasePing <= 0) {
             smoothedBasePing = estimateMs;
@@ -246,14 +246,14 @@ public class PingEqualizerState {
         lastBasePingSampleTime = now;
     }
 
-    private int computeTargetPing(ClientPlayNetworkHandler handler, int basePing) {
+    private int computeTargetPing(ClientPacketListener handler, int basePing) {
         return switch (currentMode) {
             case TOTAL -> totalTarget > 0 ? totalTarget : basePing;
             default -> -1;
         };
     }
 
-    private void updateDelay(MinecraftClient client) {
+    private void updateDelay(Minecraft client) {
         if (!serverEnabled) {
             currentDelayMs = 0;
             return;
@@ -270,17 +270,17 @@ public class PingEqualizerState {
         }
 
         if (client == null) {
-            client = MinecraftClient.getInstance();
+            client = Minecraft.getInstance();
         }
         if (client == null || client.player == null) {
             return;
         }
-        ClientPlayNetworkHandler handler = client.getNetworkHandler();
+        ClientPacketListener handler = client.getConnection();
         if (handler == null) {
             return;
         }
 
-        long now = Util.getMeasuringTimeMs();
+        long now = Util.getMillis();
 
         requestPingIfNeeded(handler, false);
 
@@ -299,8 +299,8 @@ public class PingEqualizerState {
         setCurrentDelayQuantized(now, quantizeDelayMs(preciseDelay));
     }
 
-    private void requestPingIfNeeded(ClientPlayNetworkHandler handler, boolean force) {
-        long now = Util.getMeasuringTimeMs();
+    private void requestPingIfNeeded(ClientPacketListener handler, boolean force) {
+        long now = Util.getMillis();
         if (!force) {
             if (hasFreshBase(now)) {
                 return;
@@ -309,7 +309,7 @@ public class PingEqualizerState {
                 return;
             }
         }
-        handler.sendPacket(new QueryPingC2SPacket(now));
+        handler.send(new ServerboundPingRequestPacket(now));
     }
 
     private void setCurrentDelayQuantized(long nowMs, long newDelayMs) {
@@ -349,7 +349,7 @@ public class PingEqualizerState {
             return "Ping Equalizer: OFF";
         }
 
-        long now = Util.getMeasuringTimeMs();
+        long now = Util.getMillis();
         String modeStr = switch (currentMode) {
             case ADD -> "ADD +" + addAmount + "ms";
             case TOTAL -> "TOTAL " + totalTarget + "ms";

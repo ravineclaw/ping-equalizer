@@ -1,8 +1,8 @@
 package net.ravenclaw.ravenclawspingequalizer.mixin;
 
-import net.minecraft.client.network.ClientPlayNetworkHandler;
-import net.minecraft.network.ClientConnection;
-import net.minecraft.network.packet.s2c.play.GameJoinS2CPacket;
+import net.minecraft.client.multiplayer.ClientPacketListener;
+import net.minecraft.network.Connection;
+import net.minecraft.network.protocol.game.ClientboundLoginPacket;
 import net.ravenclaw.ravenclawspingequalizer.bridge.PingEqualizerConnectionBridge;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
@@ -10,15 +10,15 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.Shadow;
 
-@Mixin(ClientPlayNetworkHandler.class)
+@Mixin(ClientPacketListener.class)
 public abstract class ClientPlayNetworkHandlerMixin {
 
     @Shadow
-    public abstract ClientConnection getConnection();
+    public abstract Connection getConnection();
 
-    @Inject(method = "onGameJoin", at = @At("TAIL"), require = 0)
-    private void pingEqualizer$onGameJoin(GameJoinS2CPacket packet, CallbackInfo ci) {
-        ClientConnection connection = this.getConnection();
+    @Inject(method = "handleLogin", at = @At("TAIL"), require = 0)
+    private void pingEqualizer$onGameJoin(ClientboundLoginPacket packet, CallbackInfo ci) {
+        Connection connection = this.getConnection();
         if (connection instanceof PingEqualizerConnectionBridge bridge) {
             bridge.pingEqualizer$signalPlayPhaseEntry();
         }

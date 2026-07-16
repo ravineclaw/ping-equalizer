@@ -11,17 +11,17 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelPipeline;
-import net.minecraft.network.ClientConnection;
-import net.minecraft.network.NetworkPhase;
-import net.minecraft.network.NetworkSide;
-import net.minecraft.network.NetworkState;
-import net.minecraft.network.listener.PacketListener;
-import net.minecraft.text.Text;
+import net.minecraft.network.Connection;
+import net.minecraft.network.ConnectionProtocol;
+import net.minecraft.network.PacketListener;
+import net.minecraft.network.ProtocolInfo;
+import net.minecraft.network.chat.Component;
+import net.minecraft.network.protocol.PacketFlow;
 import net.ravenclaw.ravenclawspingequalizer.PingEqualizerState;
 import net.ravenclaw.ravenclawspingequalizer.bridge.PingEqualizerConnectionBridge;
 import net.ravenclaw.ravenclawspingequalizer.net.PingEqualizerChannelHandler;
 
-@Mixin(ClientConnection.class)
+@Mixin(Connection.class)
 public abstract class ClientConnectionMixin implements PingEqualizerConnectionBridge {
 
     @Shadow
@@ -29,7 +29,7 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
 
     @Shadow
     @Final
-    private NetworkSide side;
+    private PacketFlow receiving;
 
     @Unique
     private PingEqualizerChannelHandler pingEqualizer$channelHandler;
@@ -44,11 +44,11 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
     private boolean pingEqualizer$reconfiguring = false;
 
     @Unique
-    private NetworkPhase pingEqualizer$lastPhase = null;
+    private ConnectionProtocol pingEqualizer$lastPhase = null;
 
     @Unique
     private boolean pingEqualizer$isClientboundConnection() {
-        return this.side == NetworkSide.CLIENTBOUND;
+        return this.receiving == PacketFlow.CLIENTBOUND;
     }
 
     @Inject(method = "addFlowControlHandler", at = @At("RETURN"), require = 0)
@@ -78,7 +78,7 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
     }
 
     @Inject(method = "disconnect(Lnet/minecraft/text/Text;)V", at = @At("HEAD"), require = 0)
-    private void pingEqualizer$onDisconnect(Text reason, CallbackInfo ci) {
+    private void pingEqualizer$onDisconnect(Component reason, CallbackInfo ci) {
         if (!pingEqualizer$isClientboundConnection()) {
             return;
         }
@@ -118,7 +118,7 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
     }
 
     @Inject(method = "transitionInbound", at = @At("HEAD"), require = 0)
-    private void pingEqualizer$onTransitionInbound(NetworkState<?> state, PacketListener listener, CallbackInfo ci) {
+    private void pingEqualizer$onTransitionInbound(ProtocolInfo<?> state, PacketListener listener, CallbackInfo ci) {
         if (!pingEqualizer$isClientboundConnection()) {
             return;
         }
@@ -126,7 +126,7 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
     }
 
     @Inject(method = "transitionOutbound", at = @At("HEAD"), require = 0)
-    private void pingEqualizer$onTransitionOutbound(NetworkState<?> state, CallbackInfo ci) {
+    private void pingEqualizer$onTransitionOutbound(ProtocolInfo<?> state, CallbackInfo ci) {
         if (!pingEqualizer$isClientboundConnection()) {
             return;
         }
@@ -134,16 +134,16 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
     }
 
     @Unique
-    private void pingEqualizer$handlePhaseTransition(NetworkPhase phase) {
-        if (phase == NetworkPhase.PLAY) {
+    private void pingEqualizer$handlePhaseTransition(ConnectionProtocol phase) {
+        if (phase == ConnectionProtocol.PLAY) {
             boolean reset = !pingEqualizer$reconfiguring;
             pingEqualizer$enterPlay(reset);
             pingEqualizer$reconfiguring = false;
         } else {
-            if (phase == NetworkPhase.CONFIGURATION && pingEqualizer$lastPhase == NetworkPhase.PLAY) {
+            if (phase == ConnectionProtocol.CONFIGURATION && pingEqualizer$lastPhase == ConnectionProtocol.PLAY) {
                 pingEqualizer$reconfiguring = true;
             }
-            pingEqualizer$leavePlay(phase != NetworkPhase.CONFIGURATION);
+            pingEqualizer$leavePlay(phase != ConnectionProtocol.CONFIGURATION);
         }
         pingEqualizer$lastPhase = phase;
     }
