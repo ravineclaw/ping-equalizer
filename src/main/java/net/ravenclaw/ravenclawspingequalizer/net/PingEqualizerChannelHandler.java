@@ -69,7 +69,22 @@ public class PingEqualizerChannelHandler extends ChannelDuplexHandler {
 
     @Override
     public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
-        if (!active || !(msg instanceof Packet<?> packet)) {
+        // Pass through non-packet messages (including netty runnables used during pipeline configuration)
+        if (!active) {
+            super.write(ctx, msg, promise);
+            return;
+        }
+        if (msg instanceof Runnable) {
+            super.write(ctx, msg, promise);
+            return;
+        }
+        // Some Minecraft pipeline configuration tasks are generated as package-private classes; defensively bypass them
+        String cls = msg == null ? "" : msg.getClass().getName();
+        if (cls.contains("OutboundConfigurationTask") || cls.contains("UnconfiguredPipelineHandler$OutboundConfigurationTask")) {
+            super.write(ctx, msg, promise);
+            return;
+        }
+        if (!(msg instanceof Packet<?> packet)) {
             super.write(ctx, msg, promise);
             return;
         }
