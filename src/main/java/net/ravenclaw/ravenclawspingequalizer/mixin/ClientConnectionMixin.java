@@ -220,7 +220,7 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
     }
 
     @Inject(method = "send", at = @At("HEAD"), cancellable = true, require = 0)
-    private void pingEqualizer$delaySendFallback(Packet<?> packet, boolean flush, CallbackInfo ci) {
+    private void pingEqualizer$delaySendFallback(Packet<?> packet, CallbackInfo ci) {
         if (pingEqualizer$sendingFallbackPacket || !pingEqualizer$isClientboundConnection()) {
             return;
         }
@@ -260,4 +260,6 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
             }
         }, delayMs, java.util.concurrent.TimeUnit.MILLISECONDS);
     }
+
+
 }
