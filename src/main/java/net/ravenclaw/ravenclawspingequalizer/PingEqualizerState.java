@@ -9,6 +9,7 @@ import net.minecraft.client.multiplayer.ClientPacketListener;
 import net.minecraft.client.multiplayer.PlayerInfo;
 import net.minecraft.network.protocol.ping.ClientboundPongResponsePacket;
 import net.minecraft.network.protocol.ping.ServerboundPingRequestPacket;
+import net.ravenclaw.ravenclawspingequalizer.bridge.PingEqualizerConnectionBridge;
 import net.minecraft.util.Util;
 
 public class PingEqualizerState {
@@ -64,12 +65,15 @@ public class PingEqualizerState {
         currentDelayMs = 0;
         preciseDelay = 0;
         resetMeasurementState();
+        syncConnectionHandlerState();
     }
 
     public void setServerEnabled(boolean enabled) {
         serverEnabled = enabled;
         if (!enabled) {
             setOff();
+        } else {
+            syncConnectionHandlerState();
         }
     }
 
@@ -88,6 +92,7 @@ public class PingEqualizerState {
         preciseDelay = addAmount;
         currentDelayMs = quantizeDelayMs(preciseDelay);
         lastDelayUpdateTimeMs = Util.getMillis();
+        syncConnectionHandlerState();
     }
 
     public void setTotalPing(int target) {
@@ -125,6 +130,8 @@ public class PingEqualizerState {
         if (handler != null) {
             requestPingIfNeeded(handler, true);
         }
+
+        syncConnectionHandlerState();
     }
 
     public void suspendForProtocolChange() {
@@ -339,6 +346,16 @@ public class PingEqualizerState {
 
     private static int clampAddedPing(int amount) {
         return Math.min(MAX_ADDED_PING_MS, Math.max(0, amount));
+    }
+
+    private void syncConnectionHandlerState() {
+        Minecraft client = Minecraft.getInstance();
+        if (client == null || client.getConnection() == null) {
+            return;
+        }
+        if (client.getConnection() instanceof PingEqualizerConnectionBridge bridge) {
+            bridge.pingEqualizer$setHandlerEnabled(currentMode != Mode.OFF && serverEnabled);
+        }
     }
 
     public String getStatusMessage() {

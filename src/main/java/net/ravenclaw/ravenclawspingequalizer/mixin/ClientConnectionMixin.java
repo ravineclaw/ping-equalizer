@@ -87,9 +87,6 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
         if (!pingEqualizer$isClientboundConnection()) {
             return;
         }
-        if (!pingEqualizer$enteredPlay) {
-            return;
-        }
         PingEqualizerState.getInstance().setOff();
         pingEqualizer$enteredPlay = false;
         if (pingEqualizer$channelHandler != null) {
@@ -100,9 +97,6 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
     @Inject(method = "tick", at = @At("TAIL"), require = 0)
     private void pingEqualizer$onTick(CallbackInfo ci) {
         if (!pingEqualizer$isClientboundConnection()) {
-            return;
-        }
-        if (!pingEqualizer$enteredPlay) {
             return;
         }
         if (channel == null || !channel.isOpen()) {
@@ -125,7 +119,7 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
         }
     }
 
-    @Inject(method = "transitionInbound", at = @At("HEAD"), require = 0)
+    @Inject(method = "transitionInbound", at = @At("TAIL"), require = 0)
     private void pingEqualizer$onTransitionInbound(ProtocolInfo<?> state, PacketListener listener, CallbackInfo ci) {
         if (!pingEqualizer$isClientboundConnection()) {
             return;
@@ -164,6 +158,26 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
         pingEqualizer$enterPlay(true);
     }
 
+    @Override
+    public void pingEqualizer$setHandlerEnabled(boolean enabled) {
+        if (!pingEqualizer$isClientboundConnection()) {
+            return;
+        }
+
+        if (!enabled) {
+            if (pingEqualizer$channelHandler != null) {
+                pingEqualizer$channelHandler.setActive(false);
+            }
+            if (channel != null) {
+                pingEqualizer$removeHandler(channel.pipeline());
+            }
+            pingEqualizer$enteredPlay = false;
+            return;
+        }
+
+        pingEqualizer$enterPlay(true);
+    }
+
     @Unique
     private void pingEqualizer$enterPlay(boolean resetState) {
         if (!pingEqualizer$enteredPlay && resetState) {
@@ -182,12 +196,6 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
 
     @Unique
     private void pingEqualizer$leavePlay(boolean suspendState) {
-        if (pingEqualizer$channelHandler != null) {
-            pingEqualizer$channelHandler.setActive(false);
-        }
-        if (channel != null) {
-            pingEqualizer$removeHandler(channel.pipeline());
-        }
         if (pingEqualizer$enteredPlay && suspendState) {
             PingEqualizerState.getInstance().suspendForProtocolChange();
             pingEqualizer$enteredPlay = false;
@@ -212,6 +220,7 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
         PingEqualizerChannelHandler existing = (PingEqualizerChannelHandler) pipeline.get(PingEqualizerChannelHandler.HANDLER_NAME);
         if (existing != null) {
             pingEqualizer$channelHandler = existing;
+            pingEqualizer$channelHandler.setActive(true);
             return false;
         }
         if (pingEqualizer$channelHandler == null) {
@@ -223,6 +232,7 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
         } else {
             pipeline.addLast(PingEqualizerChannelHandler.HANDLER_NAME, pingEqualizer$channelHandler);
         }
+        pingEqualizer$channelHandler.setActive(true);
         return true;
     }
 
@@ -243,7 +253,10 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
         if (pingEqualizer$sendingFallbackPacket || !pingEqualizer$isClientboundConnection()) {
             return;
         }
-        if (!pingEqualizer$enteredPlay || channel == null || !channel.isOpen()) {
+        if (channel == null || !channel.isOpen()) {
+            return;
+        }
+        if (!pingEqualizer$isPlayConnection()) {
             return;
         }
         if (pingEqualizer$channelHandler != null && channel != null && channel.pipeline().get(PingEqualizerChannelHandler.HANDLER_NAME) != null) {
@@ -278,6 +291,15 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
                 pingEqualizer$sendingFallbackPacket = false;
             }
         }, delayMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+    }
+
+    @Unique
+    private boolean pingEqualizer$isPlayConnection() {
+        if (channel == null || !channel.isOpen()) {
+            return false;
+        }
+        net.minecraft.client.Minecraft client = net.minecraft.client.Minecraft.getInstance();
+        return client != null && client.getConnection() instanceof net.minecraft.network.protocol.game.ClientGamePacketListener;
     }
 
 

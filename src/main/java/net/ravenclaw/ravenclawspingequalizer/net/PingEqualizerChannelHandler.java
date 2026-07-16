@@ -7,7 +7,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPromise;
+import net.minecraft.client.Minecraft;
 import net.minecraft.network.protocol.Packet;
+import net.minecraft.network.protocol.game.ClientGamePacketListener;
 import net.minecraft.network.protocol.ping.ClientboundPongResponsePacket;
 import net.minecraft.network.protocol.ping.ServerboundPingRequestPacket;
 import net.ravenclaw.ravenclawspingequalizer.PingEqualizerState;
@@ -52,7 +54,7 @@ public class PingEqualizerChannelHandler extends ChannelDuplexHandler {
     public void setActive(boolean active) {
         this.active = active;
         if (!active) {
-            flushAllQueues();
+            clearAllQueues();
         }
     }
 
@@ -63,7 +65,7 @@ public class PingEqualizerChannelHandler extends ChannelDuplexHandler {
 
     @Override
     public void handlerRemoved(ChannelHandlerContext ctx) {
-        flushAllQueues();
+        clearAllQueues();
         this.savedContext = null;
     }
 
@@ -89,8 +91,13 @@ public class PingEqualizerChannelHandler extends ChannelDuplexHandler {
             return;
         }
 
+        if (!isPlayConnection()) {
+            super.write(ctx, msg, promise);
+            return;
+        }
+
         if (shouldBypassPacket(packet)) {
-            queueOutbound(ctx, msg, promise, 0);
+            super.write(ctx, msg, promise);
             return;
         }
 
@@ -146,6 +153,16 @@ public class PingEqualizerChannelHandler extends ChannelDuplexHandler {
         boolean wrote = false;
         try {
             while (true) {
+                if (!isPlayConnection()) {
+                    if (wrote && ctx.channel().isOpen()) {
+                        ctx.flush();
+                    }
+                    long waitNanos = Math.max(MIN_RESCHEDULE_NANOS, TimeUnit.MILLISECONDS.toNanos(1));
+                    ctx.executor().schedule(() -> processOutboundQueue(ctx), waitNanos, TimeUnit.NANOSECONDS);
+                    processingOutbound.set(false);
+                    return;
+                }
+
                 OutboundTask task = outboundQueue.peek();
                 if (task == null) {
                     processingOutbound.set(false);
@@ -196,8 +213,13 @@ public class PingEqualizerChannelHandler extends ChannelDuplexHandler {
             return;
         }
 
+        if (!isPlayConnection()) {
+            super.channelRead(ctx, msg);
+            return;
+        }
+
         if (shouldBypassPacket(packet)) {
-            queueInbound(ctx, msg, 0);
+            super.channelRead(ctx, msg);
             return;
         }
 
@@ -250,6 +272,13 @@ public class PingEqualizerChannelHandler extends ChannelDuplexHandler {
     private void drainInbound(ChannelHandlerContext ctx) {
         try {
             while (true) {
+                if (!isPlayConnection()) {
+                    long waitNanos = Math.max(MIN_RESCHEDULE_NANOS, TimeUnit.MILLISECONDS.toNanos(1));
+                    ctx.executor().schedule(() -> processInboundQueue(ctx), waitNanos, TimeUnit.NANOSECONDS);
+                    processingInbound.set(false);
+                    return;
+                }
+
                 InboundTask task = inboundQueue.peek();
                 if (task == null) {
                     processingInbound.set(false);
@@ -297,13 +326,23 @@ public class PingEqualizerChannelHandler extends ChannelDuplexHandler {
         }
     }
 
+    private boolean isPlayConnection() {
+        Minecraft client = Minecraft.getInstance();
+        return client != null
+            && client.getConnection() instanceof ClientGamePacketListener;
+    }
+
+    private void clearAllQueues() {
+        outboundQueue.clear();
+        inboundQueue.clear();
+        processingOutbound.set(false);
+        processingInbound.set(false);
+    }
+
     public void flushAllQueues() {
         ChannelHandlerContext ctx = savedContext;
         if (ctx == null || !ctx.channel().isOpen()) {
-            outboundQueue.clear();
-            inboundQueue.clear();
-            processingOutbound.set(false);
-            processingInbound.set(false);
+            clearAllQueues();
             return;
         }
 
