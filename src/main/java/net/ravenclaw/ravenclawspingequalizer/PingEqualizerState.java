@@ -35,8 +35,8 @@ public class PingEqualizerState {
     private double preciseDelay = 0;
     private long lastDelayUpdateTimeMs = 0;
 
-    private int lastValidBasePing = 0;
-    private double smoothedBasePing = 0;
+    private int lastValidBasePing = -1;
+    private double smoothedBasePing = -1;
     private long lastBasePingSampleTime = 0;
     private long lastPingRequestTime = 0;
     private boolean awaitingBasePing = false;
@@ -109,7 +109,7 @@ public class PingEqualizerState {
 
         Minecraft client = Minecraft.getInstance();
         int baseEstimate = estimateInitialBasePing(client);
-        if (baseEstimate > 0) {
+        if (baseEstimate >= 0) {
             seedBaseEstimate(baseEstimate);
             double targetDelay = clampAddedPing((int) Math.max(0, totalTarget - baseEstimate));
             if (!preserveDelay || targetDelay > preciseDelay) {
@@ -183,7 +183,7 @@ public class PingEqualizerState {
         long estimatedBase = Math.max(0, measuredRtt - totalAppliedForEstimate);
         int filteredBase = pushBaseEstimate((int) estimatedBase);
 
-        if (filteredBase <= 0) {
+        if (filteredBase < 0) {
             awaitingBasePing = false;
             return;
         }
@@ -191,12 +191,12 @@ public class PingEqualizerState {
         lastValidBasePing = filteredBase;
 
         double candidate = filteredBase;
-        if (smoothedBasePing > 0) {
+        if (smoothedBasePing >= 0) {
             double lo = smoothedBasePing - BASE_PING_MAX_STEP_MS;
             double hi = smoothedBasePing + BASE_PING_MAX_STEP_MS;
             candidate = Math.max(lo, Math.min(hi, candidate));
         }
-        smoothedBasePing = smoothedBasePing == 0
+        smoothedBasePing = smoothedBasePing < 0
                 ? candidate
                 : smoothedBasePing * (1.0 - BASE_PING_ALPHA) + candidate * BASE_PING_ALPHA;
         lastBasePingSampleTime = now;
@@ -208,11 +208,11 @@ public class PingEqualizerState {
     }
 
     private boolean hasFreshBase(long now) {
-        return lastValidBasePing > 0 && now - lastBasePingSampleTime <= BASE_PING_MAX_AGE_MS;
+        return lastValidBasePing >= 0 && now - lastBasePingSampleTime <= BASE_PING_MAX_AGE_MS;
     }
 
     private int getCalibratedBase() {
-        double candidate = smoothedBasePing > 0 ? smoothedBasePing : lastValidBasePing;
+        double candidate = smoothedBasePing >= 0 ? smoothedBasePing : lastValidBasePing;
         return (int) Math.round(candidate);
     }
 
@@ -226,19 +226,19 @@ public class PingEqualizerState {
             return best;
         }
         PlayerInfo self = handler.getPlayerInfo(client.player.getUUID());
-        if (self != null && self.getLatency() > 0) {
+        if (self != null && self.getLatency() >= 0) {
             best = Math.max(best, self.getLatency());
         }
         return best;
     }
 
     private void seedBaseEstimate(int estimateMs) {
-        if (estimateMs <= 0) {
+        if (estimateMs < 0) {
             return;
         }
         long now = Util.getMillis();
         lastValidBasePing = Math.max(lastValidBasePing, estimateMs);
-        if (smoothedBasePing <= 0) {
+        if (smoothedBasePing < 0) {
             smoothedBasePing = estimateMs;
         } else {
             smoothedBasePing = Math.max(smoothedBasePing, estimateMs);
@@ -387,11 +387,11 @@ public class PingEqualizerState {
     }
 
     public int getBasePing() {
-        return lastValidBasePing;
+        return Math.max(0, lastValidBasePing);
     }
 
     public int getTotalPing() {
-        return lastValidBasePing + (int) currentDelayMs;
+        return Math.max(0, lastValidBasePing) + (int) currentDelayMs;
     }
 
     public boolean isOffMode() {
@@ -455,8 +455,8 @@ public class PingEqualizerState {
         pendingPings.clear();
         awaitingBasePing = false;
         lastPingRequestTime = 0;
-        lastValidBasePing = 0;
-        smoothedBasePing = 0;
+        lastValidBasePing = -1;
+        smoothedBasePing = -1;
         lastBasePingSampleTime = 0;
         lastMeasuredRtt = -1;
         baseEstimateCount = 0;
@@ -464,7 +464,7 @@ public class PingEqualizerState {
     }
 
     private int pushBaseEstimate(int estimateMs) {
-        if (estimateMs <= 0) {
+        if (estimateMs < 0) {
             return -1;
         }
         baseEstimateWindow[baseEstimateIndex] = estimateMs;
