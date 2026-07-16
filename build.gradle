@@ -10,13 +10,6 @@ base {
     archivesName = project.archives_base_name
 }
 
-def obfuscationScript = file("scripts/obfuscation.gradle")
-if (obfuscationScript.exists()) {
-    apply from: obfuscationScript
-} else {
-    logger.lifecycle("Obfuscation script not found; skipping obfuscation-specific configuration.")
-}
-
 loom {
     mixin {
         defaultRefmapName = "ravenclawspingequalizer.refmap.json"

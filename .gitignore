@@ -1,4 +1,3 @@
-# Test infrastructure and local scripts
 src/test/**
 scripts/**
 TEST_RESULTS.md
@@ -6,18 +5,13 @@ TEST_RESULTS_ENHANCED.md
 run-test-server.ps1
 run-test-client.ps1
 test-crypto.ps1
-
-# Local secrets (do not commit private keys)
 secrets.properties
 
-# Build outputs
 build/**
 run/**
 yarn-*/**
-# Ignore everything by default
 /*
 
-# Except these essential files and directories
 !src/
 !build.gradle
 !gradle.properties

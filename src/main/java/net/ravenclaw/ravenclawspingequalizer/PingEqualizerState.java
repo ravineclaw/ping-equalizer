@@ -29,6 +29,7 @@ public class PingEqualizerState {
     private Mode currentMode = Mode.OFF;
     private int addAmount = 0;
     private int totalTarget = 0;
+    private boolean serverEnabled = true;
 
     private long currentDelayMs = 0;
     private double preciseDelay = 0;
@@ -65,7 +66,23 @@ public class PingEqualizerState {
         resetMeasurementState();
     }
 
+    public void setServerEnabled(boolean enabled) {
+        serverEnabled = enabled;
+        if (!enabled) {
+            setOff();
+        }
+    }
+
+    public void resetServerControl() {
+        serverEnabled = true;
+        setOff();
+    }
+
     public void setAddPing(int amount) {
+        if (!serverEnabled) {
+            setOff();
+            return;
+        }
         currentMode = Mode.ADD;
         addAmount = clampAddedPing(amount);
         preciseDelay = addAmount;
@@ -74,6 +91,10 @@ public class PingEqualizerState {
     }
 
     public void setTotalPing(int target) {
+        if (!serverEnabled) {
+            setOff();
+            return;
+        }
         int normalizedTarget = Math.max(0, target);
         boolean preserveDelay = currentMode == Mode.TOTAL && normalizedTarget == totalTarget;
 
@@ -233,6 +254,10 @@ public class PingEqualizerState {
     }
 
     private void updateDelay(MinecraftClient client) {
+        if (!serverEnabled) {
+            currentDelayMs = 0;
+            return;
+        }
         if (currentMode == Mode.OFF) {
             currentDelayMs = 0;
             return;
@@ -317,6 +342,9 @@ public class PingEqualizerState {
     }
 
     public String getStatusMessage() {
+        if (!serverEnabled) {
+            return "Ping Equalizer: disabled by server";
+        }
         if (currentMode == Mode.OFF) {
             return "Ping Equalizer: OFF";
         }
@@ -368,6 +396,10 @@ public class PingEqualizerState {
 
     public boolean isOffMode() {
         return currentMode == Mode.OFF;
+    }
+
+    public boolean isServerEnabled() {
+        return serverEnabled;
     }
 
     public boolean isAddingDelay(int amount) {
