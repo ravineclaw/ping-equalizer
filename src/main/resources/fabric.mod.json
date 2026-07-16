@@ -6,7 +6,7 @@
   "description": "",
   "authors": ["Ravenclaw"],
   "contact": {"Discord": "ravineclaw"},
-  "license": "All-Rights-Reserved",
+  "license": "MIT",
   "icon": "assets/ravenclawspingequalizer/icon.png",
   "environment": "client",
   "entrypoints": {
