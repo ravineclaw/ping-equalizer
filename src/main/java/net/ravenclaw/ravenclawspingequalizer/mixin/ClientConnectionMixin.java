@@ -20,6 +20,8 @@ import net.minecraft.network.protocol.PacketFlow;
 import net.ravenclaw.ravenclawspingequalizer.PingEqualizerState;
 import net.ravenclaw.ravenclawspingequalizer.bridge.PingEqualizerConnectionBridge;
 import net.ravenclaw.ravenclawspingequalizer.net.PingEqualizerChannelHandler;
+import net.minecraft.network.protocol.Packet;
+import net.minecraft.network.protocol.ping.ServerboundPingRequestPacket;
 
 @Mixin(Connection.class)
 public abstract class ClientConnectionMixin implements PingEqualizerConnectionBridge {
@@ -42,6 +44,9 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
 
     @Unique
     private boolean pingEqualizer$reconfiguring = false;
+
+    @Unique
+    private boolean pingEqualizer$sendingFallbackPacket = false;
 
     @Unique
     private ConnectionProtocol pingEqualizer$lastPhase = null;
@@ -212,5 +217,47 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
             return "packet_handler";
         }
         return null;
+    }
+
+    @Inject(method = "send", at = @At("HEAD"), cancellable = true, require = 0)
+    private void pingEqualizer$delaySendFallback(Packet<?> packet, boolean flush, CallbackInfo ci) {
+        if (pingEqualizer$sendingFallbackPacket || !pingEqualizer$isClientboundConnection()) {
+            return;
+        }
+        if (!pingEqualizer$enteredPlay || channel == null || !channel.isOpen()) {
+            return;
+        }
+        if (pingEqualizer$channelHandler != null && channel != null && channel.pipeline().get(PingEqualizerChannelHandler.HANDLER_NAME) != null) {
+            return;
+        }
+
+        PingEqualizerState state = PingEqualizerState.getInstance();
+        if (state.getMode() == PingEqualizerState.Mode.OFF) {
+            return;
+        }
+
+        long delayMs = state.getOutboundDelayPortion();
+        if (delayMs <= 0) {
+            return;
+        }
+
+        if (packet instanceof ServerboundPingRequestPacket ping) {
+            state.onPingSent(ping.getTime());
+            state.recordPingOutboundDelay(ping.getTime(), delayMs);
+        }
+
+        ci.cancel();
+        channel.eventLoop().schedule(() -> {
+            if (!channel.isOpen()) return;
+            try {
+                if (packet instanceof ServerboundPingRequestPacket ping) {
+                    PingEqualizerState.getInstance().onPingActuallySent(ping.getTime());
+                }
+                pingEqualizer$sendingFallbackPacket = true;
+                ((Connection) (Object) this).send(packet);
+            } finally {
+                pingEqualizer$sendingFallbackPacket = false;
+            }
+        }, delayMs, java.util.concurrent.TimeUnit.MILLISECONDS);
     }
 }
