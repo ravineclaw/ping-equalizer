@@ -103,6 +103,9 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
         if (!pingEqualizer$isClientboundConnection()) {
             return;
         }
+        if (!pingEqualizer$enteredPlay) {
+            return;
+        }
         if (channel == null || !channel.isOpen()) {
             return;
         }
@@ -214,6 +217,9 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
         } else if (resetState) {
             PingEqualizerState.getInstance().prepareForNewPlaySession();
         }
+        if (channel != null) {
+            pingEqualizer$ensureHandler(channel.pipeline());
+        }
         if (pingEqualizer$channelHandler != null) {
             pingEqualizer$channelHandler.setActive(true);
         }
@@ -224,9 +230,22 @@ public abstract class ClientConnectionMixin implements PingEqualizerConnectionBr
         if (pingEqualizer$channelHandler != null) {
             pingEqualizer$channelHandler.setActive(false);
         }
+        if (channel != null) {
+            pingEqualizer$removeHandler(channel.pipeline());
+        }
         if (pingEqualizer$enteredPlay && suspendState) {
             PingEqualizerState.getInstance().suspendForProtocolChange();
             pingEqualizer$enteredPlay = false;
+        }
+    }
+
+    @Unique
+    private void pingEqualizer$removeHandler(ChannelPipeline pipeline) {
+        if (pipeline == null) {
+            return;
+        }
+        if (pipeline.get(PingEqualizerChannelHandler.HANDLER_NAME) != null) {
+            pipeline.remove(PingEqualizerChannelHandler.HANDLER_NAME);
         }
     }
 
